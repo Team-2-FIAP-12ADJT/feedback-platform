@@ -5,8 +5,11 @@ Tech Challenge da **Fase 4** da pós-graduação FIAP ADJT — Cloud Computing, 
 Plataforma de feedback de aulas: estudantes avaliam as aulas, administradores recebem aviso imediato dos
 itens críticos e um relatório semanal com a média das avaliações.
 
-> **Estado:** enunciado lido; **nenhuma decisão de arquitetura tomada e nada implementado.** As decisões
-> abertas estão listadas abaixo e serão registradas como ADR em `docs/adr/` conforme o grupo decidir.
+> **Estado:** enunciado lido; regra de urgência decidida ([ADR 0001](docs/adr/0001-urgencia-derivada-da-nota.md));
+> **nenhuma decisão de arquitetura tomada e nada implementado.** As decisões abertas estão listadas abaixo e serão
+> registradas como ADR em `docs/adr/` conforme o grupo decidir.
+>
+> **Prazo de entrega: 17/11/2026.**
 
 Enunciado: [`docs/ADJT - Fase 4 - Tech Challenge_rev.pdf`](<docs/ADJT - Fase 4 - Tech Challenge_rev.pdf>).
 
@@ -24,12 +27,14 @@ Enunciado: [`docs/ADJT - Fase 4 - Tech Challenge_rev.pdf`](<docs/ADJT - Fase 4 -
 
 ## Decisões em aberto
 
-1. **Urgência não vem na entrada.** O payload tem só `descricao` e `nota`, mas o e-mail e o relatório pedem
-   "urgência" — ela precisa ser derivada da nota, com faixas a definir.
-2. **O que é "crítico"** para disparar o aviso — consequência da faixa do item 1.
-3. **Rota com acento** (`/avaliação`): acento em path costuma quebrar gateway e cliente HTTP; avaliar `/avaliacao`.
-4. **Provedor de cloud** e a ferramenta de deploy automatizado (IaC + pipeline).
-5. **Quantas funções e com que fronteira** — o mínimo é 2; a separação por responsabilidade é critério de avaliação.
+1. **Rota com acento** (`/avaliação`): acento em path costuma quebrar gateway e cliente HTTP; avaliar `/avaliacao`.
+2. **Provedor de cloud** e a ferramenta de deploy automatizado (IaC + pipeline).
+3. **Quantas funções e com que fronteira** — o mínimo é 2; a separação por responsabilidade é critério de avaliação.
 
-O exemplo de JSON do enunciado tem vírgula sobrando: é ilustração, não contrato. O prazo de entrega está na
-plataforma da FIAP, não no PDF.
+O exemplo de JSON do enunciado tem vírgula sobrando: é ilustração, não contrato.
+
+## Decisões tomadas
+
+| ADR | Decisão |
+|---|---|
+| [0001](docs/adr/0001-urgencia-derivada-da-nota.md) | Urgência derivada da nota: 0–3 `CRITICA`, 4–6 `MEDIA`, 7–10 `BAIXA`; só `CRITICA` dispara o e-mail |
