@@ -1,0 +1,6 @@
+# Scripts precisam de LF em qualquer SO: no Windows o checkout em CRLF quebra shell script
+# (feedback da avaliação da Fase 3).
+* text=auto eol=lf
+*.pdf binary
+*.png binary
+*.jpg binary

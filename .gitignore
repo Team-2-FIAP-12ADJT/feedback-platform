@@ -1,0 +1,17 @@
+# Build
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# SO
+.DS_Store
+
+# Segredos locais
+.env
+
+# Agentes
+.claude/
+.maestri/
