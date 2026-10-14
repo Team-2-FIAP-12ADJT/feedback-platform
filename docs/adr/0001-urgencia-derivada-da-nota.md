@@ -1,6 +1,6 @@
 # ADR 0001 — Urgência derivada da nota
 
-- **Status:** aceita
+- **Status:** proposta
 - **Data:** 2026-10-14
 
 ## Contexto
@@ -11,21 +11,24 @@ O enunciado também pede aviso imediato aos administradores para itens **crític
 
 ## Decisão
 
-A urgência é calculada a partir da nota, no momento em que a avaliação é recebida, e gravada junto com ela:
+A Urgency é calculada a partir do Score no momento em que a Evaluation é recebida, e gravada junto com ela:
 
-| Nota | Urgência |
+| Score | Urgency |
 |---|---|
-| 0–3 | `CRITICA` |
-| 4–6 | `MEDIA` |
-| 7–10 | `BAIXA` |
+| 0–3 | `CRITICAL` |
+| 4–6 | `MEDIUM` |
+| 7–10 | `LOW` |
 
-**É crítica a avaliação com urgência `CRITICA`** — só ela dispara o e-mail de aviso.
+**Critical Evaluation é a Evaluation com Urgency `CRITICAL`** — só ela dispara o Urgency Notice.
+
+Os valores estão em inglês por causa da [ADR 0002](0002-codigo-em-ingles-contrato-em-portugues.md); nos e-mails eles
+aparecem como "Crítica", "Média" e "Baixa".
 
 ## Consequências
 
-- O cliente não informa a urgência: ela é sempre calculada pelo sistema.
-- A nota é validada na entrada (inteiro entre 0 e 10); fora disso a avaliação é rejeitada. Por isso toda nota aceita
-  cai em exatamente uma faixa.
-- A urgência é gravada, não recalculada na leitura: o relatório semanal agrupa pelo valor gravado, e uma mudança
-  futura das faixas não reescreve o passado.
-- Mudar as faixas é mudar o código da função que recebe a avaliação, registrado em nova ADR.
+- O cliente não informa a Urgency: ela é sempre calculada pelo sistema.
+- O Score é validado na entrada (inteiro entre 0 e 10); fora disso a Evaluation é rejeitada. Por isso todo Score
+  aceito cai em exatamente uma faixa.
+- A Urgency é gravada, não recalculada na leitura: o Weekly Report agrupa pelo valor gravado, e uma mudança futura das
+  faixas não reescreve o passado.
+- Mudar as faixas é mudar o código do módulo `domain`, registrado em nova ADR.
