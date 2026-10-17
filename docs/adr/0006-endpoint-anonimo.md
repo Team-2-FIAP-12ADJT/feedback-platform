@@ -1,6 +1,6 @@
 # ADR 0006 — `POST /avaliacao` anônimo, com limites na borda
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto
@@ -25,10 +25,10 @@ dos Administrators.
   é segredo, só um limitador com outro nome.
 - **Login de Student** (ex.: Cognito/JWT): resolve, mas exige cadastro, login e emissão de token, que o enunciado não
   pede.
-- **Regra por IP no firewall de aplicação** (ex.: WAF): corta o script de um IP só, com custo fixo mensal. Não decidido;
-  depende da conta.
+- **Regra por IP no firewall de aplicação** (ex.: WAF): corta o script de um IP só, com custo fixo mensal. Adotada como
+  complemento do limite do gateway na [ADR 0015](0015-rest-api-com-waf.md).
 
 ## Consequências
 
 - O limite de taxa freia, mas não impede, uma enxurrada: o alarme de volume do monitoramento é o que avisa.
-- Os limites numéricos (requisições por segundo, tamanho do corpo) ficam para a rodada de deploy.
+- Os limites numéricos (requisições por segundo, por IP e tamanho do corpo) estão na [ADR 0015](0015-rest-api-com-waf.md).

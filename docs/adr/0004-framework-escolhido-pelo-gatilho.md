@@ -1,6 +1,6 @@
 # ADR 0004 — Java 25, framework escolhido pelo gatilho, monorepo Maven
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto

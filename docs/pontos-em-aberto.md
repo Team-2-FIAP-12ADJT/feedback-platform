@@ -3,62 +3,62 @@
 O que ainda não foi decidido, ou foi decidido e ainda não feito. Cada item sai daqui quando vira ADR, documento ou
 entrega. As decisões tomadas estão em [`docs/adr/`](adr/) e no [README](../README.md#decisões-tomadas).
 
-Atualizado em 2026-10-14.
+Atualizado em 2026-10-17.
 
-## 1. Bloqueante: conta de cloud
+## 1. Conta de cloud — resolvido
 
-**Rodar em conta AWS própria do grupo ou no AWS Academy Learner Lab da FIAP?** Aguardando confirmação com a FIAP se
-a entrega exige os créditos dela.
+**Conta AWS própria do grupo, não o Learner Lab** (decidido em 2026-10-17). Acesso pelo usuário IAM `equipefiap`;
+**US$ 120 em créditos**. O ID da conta fica fora do repositório (que é público): no pipeline, entra como variável do
+GitHub.
 
-O que muda entre as duas:
+O que isso destrava: uma role por função com privilégio mínimo, deploy pelo GitHub Actions sem chave guardada no
+repositório e escolha da região — `sa-east-1` ([ADR 0011](adr/0011-regiao-sao-paulo.md)).
 
-| | Conta própria | Learner Lab |
-|---|---|---|
-| IAM com privilégio mínimo por função | Uma role por função | Uma `LabRole` única para tudo — não é possível criar role |
-| Deploy pelo GitHub Actions | Login na AWS sem chave guardada no repositório | Credencial expira a cada sessão de 4 h e precisa ser recolocada no secret antes de cada deploy |
-| Custo | Cartão de alguém do grupo; free tier, com orçamento e alarme | Sem custo; o lab morre quando o orçamento acaba |
-| Regiões | Qualquer uma | Só `us-east-1` e `us-west-2` |
+**Medido na conta em 2026-10-17** (só leitura):
 
-Se for Learner Lab, a role única e o deploy semiautomático entram no README como limitações declaradas.
+- `equipefiap` é um **usuário** IAM, não um grupo, e era o único da conta. Tem `AdministratorAccess`: pode criar roles, o
+  provedor OIDC do GitHub e orçamentos. A conta não pertence a uma AWS Organization, então nada restringe o usuário.
+- Ainda não existe provedor OIDC.
 
-**A verificar no Learner Lab**, se for o caso: SES (envio de e-mail) liberado e fora do sandbox? SnapStart disponível?
+**Em aberto:**
 
-## 2. Rodada de deploy — ainda não discutida
+- **Governança de acesso — feito em 2026-10-17, falta fechar:** um usuário IAM por integrante (`deivis.vargas`,
+  `leomir.nascimento`, `gustavo.santos`, `leonardo.souza`, `ricardo.lima`) no grupo `feedback-platform-admins`, com
+  `AdministratorAccess` e uma política que **nega tudo sem MFA**, exceto cadastrar o próprio MFA e trocar a senha. Acesso
+  só pelo console e por `aws login`, sem access key; senha inicial com troca obrigatória; política de senha da conta com
+  14 caracteres, todos os tipos e sem reaproveitar as últimas 5. IAM Identity Center descartado: numa conta avulsa, só
+  dá acesso à conta se ela virar a principal de uma AWS Organization.
+  Provado com `ricardo.lima`: sem MFA, o console e o `aws login` são negados; com MFA cadastrado, o `aws login` leva o MFA
+  para a credencial do CLI e as chamadas passam.
+  O usuário compartilhado `equipefiap` fica **como acesso de emergência** (decidido em 2026-10-17), fora do grupo.
+  Falta: todos os acessos de administrador com MFA, inclusive o de emergência; documentar no README.
+- **Orçamento — feito em 2026-10-17:** `feedback-platform-mensal`, US$ 80 por mês, custo medido **sem** descontar os
+  créditos (senão o alarme só dispararia quando os créditos acabassem). E-mail para um integrante do grupo aos 50%, 80%
+  e 100% do gasto real e quando a previsão do mês passar de 100%.
+- Quais serviços os créditos cobrem e até quando valem (Billing → Credits, no console).
 
-Os dois caminhos acima são AWS; o que muda entre eles está marcado.
+## 2. Rodada de deploy — decidida
+
+Todos os pontos são na conta AWS do item 1. Já decididos: banco, gravação → aviso, região, IaC, pipeline, e-mail, canal
+do Operational Alert, gateway, monitoramento, filas de falha, criptografia, roles das funções, lista de Administrators e
+ambiente único (ADRs 0010–0021). O agendador com fuso é o EventBridge Scheduler (ADR 0012) e a prova do SnapStart é o
+teste de fumaça do deploy (ADR 0013).
 
 | Ponto | O que decidir | Depende de |
 |---|---|---|
-| Banco | Qual banco grava as Evaluations, e como a consulta por Report Week é feita sem varrer a tabela. Precisa suportar expiração automática (12 semanas, ADR 0009) | — |
-| Gravação → aviso | Mecanismo pelo qual a gravação da Evaluation dispara a `send-urgency-notice` (ADR 0003), e se o filtro "só `CRITICAL`" fica na assinatura do evento ou na função | Banco |
-| DLQ | Fila de mensagens que falharam da `send-urgency-notice`, número de tentativas | Gravação → aviso |
-| Serviço de e-mail | Envio do Urgency Notice e do Weekly Report em HTML. Verificação dos endereços dos Administrators enquanto o serviço estiver em sandbox | Conta |
-| Canal do Operational Alert | Mecanismo independente do serviço de e-mail das funções (ADR 0007), com a lista configurada no monitoramento | — |
-| Agendador | Precisa aceitar fuso `America/Sao_Paulo` (ADR 0008); senão, cron em UTC | — |
-| Gateway | Limite de requisições por segundo e de tamanho do corpo (ADR 0006); retenção dos logs de acesso | — |
-| Monitoramento | Métricas, limites e alarmes dos 5 gatilhos do Operational Alert (ADR 0007) | Canal do Operational Alert |
-| IAM | Uma role por função com privilégio mínimo | **Conta** |
-| Segurança dos dados | Criptografia em repouso do banco e das filas | Banco |
-| IaC | Ferramenta (Terraform, CDK, SAM…) | — |
-| Pipeline | GitHub Actions: build, teste, deploy; autenticação na AWS | **Conta**, IaC |
-| SnapStart | Publicação de versão e alias a cada deploy (ADR 0004) | IaC, **Conta** |
-| Lista de Administrators | Onde fica a configuração da lista fixa por ambiente, fora do repositório | Serviço de e-mail |
-| Ambientes | Um só (demonstração) ou dev + demonstração | Conta, custo |
-| Custo | Orçamento mensal e alarme | Conta |
+| Remetente do SES | Endereço verificado que envia o Urgency Notice e o Weekly Report — de preferência um e-mail do grupo, não pessoal (ADR 0014) | — |
+| Custo | Orçamento e alarme já criados (item 1). Falta conferir no 1º mês o custo fixo do WAF (ADR 0015) contra os US$ 120 de créditos | — |
 
 ## 3. Decidido, ainda não registrado em documento próprio
 
-- **Lista de Administrators:** fixa por ambiente, na configuração e fora do repositório; uma lista só para Urgency
-  Notice, Weekly Report e Operational Alert; a função falha ao subir se estiver vazia. Vira instrução de deploy no
-  README. Cadastro de Administrators está fora de escopo: o avaliador assiste ao vídeo, não usa o ambiente.
 - **Estratégia de teste:** registrada no README §Testes; o roteiro ponta a ponta vira `docs/validacao-manual.md`
   quando houver o que validar.
 
 ## 4. Processo do grupo
 
-- [ ] Avisar o grupo no canal com o link das ADRs 0001–0009. Sem objeção em 48 h, viram `aceita`.
+- [x] Passar as ADRs pelo grupo — as ADRs 0001–0021 estão `aceita` (2026-10-17).
 - [ ] Convidar o grupo para o repositório.
-- [ ] Proteger a `main`.
+- [ ] Proteger a `main` — PR obrigatória e `ci` verde. **Pré-requisito do deploy automático** (ADR 0013).
 - [ ] Dividir o trabalho entre os integrantes.
 
 ## 5. Entregáveis ainda não produzidos

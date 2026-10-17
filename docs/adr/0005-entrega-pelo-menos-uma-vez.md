@@ -1,6 +1,6 @@
 # ADR 0005 — Urgency Notice entregue "pelo menos uma vez"; duplicatas aceitas
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto

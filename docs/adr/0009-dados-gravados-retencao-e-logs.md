@@ -1,6 +1,6 @@
 # ADR 0009 — Dados gravados, retenção e logs
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto

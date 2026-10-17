@@ -1,6 +1,6 @@
 # ADR 0001 — Urgência derivada da nota
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto

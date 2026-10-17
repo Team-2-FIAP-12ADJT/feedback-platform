@@ -1,6 +1,6 @@
 # ADR 0002 — Código em inglês, contrato e e-mails em português
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto

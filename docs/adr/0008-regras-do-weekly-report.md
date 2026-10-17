@@ -1,6 +1,6 @@
 # ADR 0008 — Regras do Weekly Report
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto

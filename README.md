@@ -5,8 +5,7 @@ Tech Challenge da **Fase 4** da pós-graduação FIAP ADJT — Cloud Computing, 
 Plataforma de feedback de aulas: estudantes avaliam as aulas, administradores recebem aviso imediato dos
 itens críticos e um relatório semanal com a média das avaliações.
 
-> **Estado:** desenho da aplicação proposto (ADRs 0001–0009, todas `proposta`); **cloud e deploy em aberto**, à
-> espera da confirmação com a FIAP sobre a conta. **Nada implementado.** O que falta decidir e fazer está em
+> **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0021, todas `aceita`). **Nada implementado.** O que falta decidir e fazer está em
 > [`docs/pontos-em-aberto.md`](docs/pontos-em-aberto.md).
 >
 > **Prazo de entrega: 17/11/2026.**
@@ -36,15 +35,27 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
 
 | ADR | Decisão | Status |
 |---|---|---|
-| [0001](docs/adr/0001-urgencia-derivada-da-nota.md) | Urgency derivada do Score: 0–3 `CRITICAL`, 4–6 `MEDIUM`, 7–10 `LOW`; só `CRITICAL` gera o Urgency Notice | proposta |
-| [0002](docs/adr/0002-codigo-em-ingles-contrato-em-portugues.md) | Código e termos canônicos em inglês; contrato HTTP e e-mails em português | proposta |
-| [0003](docs/adr/0003-tres-funcoes-aviso-nasce-da-gravacao.md) | Três funções, uma aplicação por função; o aviso nasce da gravação da Evaluation | proposta |
-| [0004](docs/adr/0004-framework-escolhido-pelo-gatilho.md) | Java 25; Quarkus na função HTTP, Spring Boot nas que enviam e-mail; monorepo Maven | proposta |
-| [0005](docs/adr/0005-entrega-pelo-menos-uma-vez.md) | Urgency Notice "pelo menos uma vez", com marca na Evaluation; duplicatas aceitas | proposta |
-| [0006](docs/adr/0006-endpoint-anonimo.md) | `POST /avaliacao` anônimo, com limites na borda | proposta |
-| [0007](docs/adr/0007-operational-alert-separado-do-urgency-notice.md) | Operational Alert para falhas da plataforma, separado do Urgency Notice | proposta |
-| [0008](docs/adr/0008-regras-do-weekly-report.md) | Report Week de segunda a domingo em Brasília; teto de 500 na lista; semana vazia também envia | proposta |
-| [0009](docs/adr/0009-dados-gravados-retencao-e-logs.md) | Nada que identifique o Student; retenção de 12 semanas; Description fora do log | proposta |
+| [0001](docs/adr/0001-urgencia-derivada-da-nota.md) | Urgency derivada do Score: 0–3 `CRITICAL`, 4–6 `MEDIUM`, 7–10 `LOW`; só `CRITICAL` gera o Urgency Notice | aceita |
+| [0002](docs/adr/0002-codigo-em-ingles-contrato-em-portugues.md) | Código e termos canônicos em inglês; contrato HTTP e e-mails em português | aceita |
+| [0003](docs/adr/0003-tres-funcoes-aviso-nasce-da-gravacao.md) | Três funções, uma aplicação por função; o aviso nasce da gravação da Evaluation | aceita |
+| [0004](docs/adr/0004-framework-escolhido-pelo-gatilho.md) | Java 25; Quarkus na função HTTP, Spring Boot nas que enviam e-mail; monorepo Maven | aceita |
+| [0005](docs/adr/0005-entrega-pelo-menos-uma-vez.md) | Urgency Notice "pelo menos uma vez", com marca na Evaluation; duplicatas aceitas | aceita |
+| [0006](docs/adr/0006-endpoint-anonimo.md) | `POST /avaliacao` anônimo, com limites na borda | aceita |
+| [0007](docs/adr/0007-operational-alert-separado-do-urgency-notice.md) | Operational Alert para falhas da plataforma, separado do Urgency Notice | aceita |
+| [0008](docs/adr/0008-regras-do-weekly-report.md) | Report Week de segunda a domingo em Brasília; teto de 500 na lista; semana vazia também envia | aceita |
+| [0009](docs/adr/0009-dados-gravados-retencao-e-logs.md) | Nada que identifique o Student; retenção de 12 semanas; Description fora do log | aceita |
+| [0010](docs/adr/0010-dynamodb-particionado-por-dia.md) | DynamoDB particionado pelo dia da submissão em Brasília; TTL de 12 semanas; o Urgency Notice sai do Streams, filtrado na assinatura | aceita |
+| [0011](docs/adr/0011-regiao-sao-paulo.md) | Tudo em `sa-east-1` (São Paulo); o SnapStart é provado no primeiro deploy | aceita |
+| [0012](docs/adr/0012-iac-com-aws-sam.md) | Infraestrutura como código com AWS SAM; usuários IAM e a pilha de OIDC do pipeline ficam fora do template | aceita |
+| [0013](docs/adr/0013-pipeline-deploy-automatico-oidc.md) | Deploy automático a cada merge na `main`, por OIDC, com role restrita a `sa-east-1` e a roles `feedback-platform-*` | aceita |
+| [0014](docs/adr/0014-ses-para-funcoes-sns-para-alerta.md) | SES para o Urgency Notice e o Weekly Report; Operational Alert por CloudWatch → EventBridge → SNS, em texto não técnico | aceita |
+| [0015](docs/adr/0015-rest-api-com-waf.md) | API Gateway REST com WAF: corpo até 8 KB, 300 requisições em 5 min por IP, teto de 20/s | aceita |
+| [0016](docs/adr/0016-alarmes-do-operational-alert.md) | Métricas e limites dos alarmes do Operational Alert (DLQ ≥ 1, volume > 150 em 5 min, entre outros) e dashboard | aceita |
+| [0017](docs/adr/0017-tentativas-e-filas-de-falha.md) | Urgency Notice: 3 tentativas, até 1 hora, depois DLQ; reenvio pela marca na tabela. Weekly Report: até 4 horas | aceita |
+| [0018](docs/adr/0018-criptografia-padrao-da-aws.md) | Criptografia em repouso com as chaves padrão da AWS; TLS em trânsito; acesso ao dado controlado pelas roles | aceita |
+| [0019](docs/adr/0019-uma-role-por-funcao.md) | Uma role por função com privilégio mínimo; a função pública só grava | aceita |
+| [0020](docs/adr/0020-lista-de-administrators-no-github.md) | Lista de Administrators numa variável do GitHub, que gera os destinatários do SES, as assinaturas do SNS e as verificações | aceita |
+| [0021](docs/adr/0021-um-ambiente-so.md) | Um ambiente só na AWS, `demo`; o `ci` e o teste de fumaça seguram o defeito antes dela | aceita |
 
 Contrato da rota: [`docs/contracts/receive-evaluation.md`](docs/contracts/receive-evaluation.md).
 

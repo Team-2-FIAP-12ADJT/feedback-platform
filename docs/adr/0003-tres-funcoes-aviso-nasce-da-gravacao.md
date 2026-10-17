@@ -1,6 +1,6 @@
 # ADR 0003 — Três funções, uma aplicação por função, e o aviso nasce da gravação
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto
@@ -22,7 +22,7 @@ Três aplicações, cada uma implantada como **uma função Lambda**, mais um m�
 
 **O Urgency Notice nasce da gravação da Evaluation, não de uma segunda chamada da `receive-evaluation`.** Se a
 Recebe gravasse e depois publicasse um evento, uma falha entre as duas operações deixaria uma Critical Evaluation sem
-aviso, sem ninguém perceber. O mecanismo exato depende do banco escolhido (pontos em aberto).
+aviso, sem ninguém perceber. O mecanismo está na [ADR 0010](0010-dynamodb-particionado-por-dia.md).
 
 O **Weekly Report lê o que está gravado**, não os eventos.
 

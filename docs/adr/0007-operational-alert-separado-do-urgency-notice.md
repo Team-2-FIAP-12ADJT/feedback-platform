@@ -1,6 +1,6 @@
 # ADR 0007 — Operational Alert separado do Urgency Notice
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-14
 
 ## Contexto
@@ -24,7 +24,7 @@ O Operational Alert:
   o alerta que avisaria dela;
 - tem a lista de destinatários configurada **no próprio monitoramento**, não lida por nenhuma função.
 
-Gatilhos, com os limites exatos na rodada de deploy:
+Gatilhos — métricas e limites na [ADR 0016](0016-alarmes-do-operational-alert.md):
 
 1. **Mensagem na fila de mensagens que falharam (DLQ) da `send-urgency-notice`**: uma Critical Evaluation ficou sem
    Urgency Notice. É o gatilho principal.
