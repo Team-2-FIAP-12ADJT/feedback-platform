@@ -1,6 +1,7 @@
 # ADR 0005 — Urgency Notice entregue "pelo menos uma vez"; duplicatas aceitas
 
 - **Status:** aceita
+- **Substituída em parte por:** [ADR 0022](0022-send-urgency-notice-le-a-marca.md) — o item sobre lote com falha
 - **Data:** 2026-10-14
 
 ## Contexto

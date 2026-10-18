@@ -1,6 +1,7 @@
 # ADR 0013 — Pipeline: deploy automático a cada merge na `main`, por OIDC, com role restrita
 
 - **Status:** aceita
+- **Complementada por:** [ADR 0024](0024-teste-de-fumaca-apaga-a-propria-evaluation.md) — a Evaluation do teste de fumaça
 - **Data:** 2026-10-17
 
 ## Contexto

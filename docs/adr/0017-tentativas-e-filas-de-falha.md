@@ -1,6 +1,7 @@
 # ADR 0017 — Tentativas e filas de falha (DLQ) do Urgency Notice e do Weekly Report
 
 - **Status:** aceita
+- **Substituída em parte por:** [ADR 0022](0022-send-urgency-notice-le-a-marca.md) — a justificativa do tamanho do lote
 - **Data:** 2026-10-17
 
 ## Contexto

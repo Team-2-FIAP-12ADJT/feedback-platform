@@ -1,6 +1,7 @@
 # ADR 0014 — SES para os e-mails das funções; SNS para o Operational Alert
 
 - **Status:** aceita
+- **Complementada por:** [ADR 0023](0023-remetente-e-o-primeiro-administrator.md) — o remetente
 - **Data:** 2026-10-17
 
 ## Contexto

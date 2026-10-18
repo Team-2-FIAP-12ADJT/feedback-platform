@@ -5,8 +5,8 @@ Tech Challenge da **Fase 4** da pós-graduação FIAP ADJT — Cloud Computing, 
 Plataforma de feedback de aulas: estudantes avaliam as aulas, administradores recebem aviso imediato dos
 itens críticos e um relatório semanal com a média das avaliações.
 
-> **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0021, todas `aceita`). **Nada implementado.** O que falta decidir e fazer está em
-> [`docs/pontos-em-aberto.md`](docs/pontos-em-aberto.md).
+> **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0021 `aceita`; 0022–0024 `proposta`). **Nada
+> implementado.** Não há decisão em aberto: o que falta é implementar.
 >
 > **Prazo de entrega: 17/11/2026.**
 
@@ -56,6 +56,9 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
 | [0019](docs/adr/0019-uma-role-por-funcao.md) | Uma role por função com privilégio mínimo; a função pública só grava | aceita |
 | [0020](docs/adr/0020-lista-de-administrators-no-github.md) | Lista de Administrators numa variável do GitHub, que gera os destinatários do SES, as assinaturas do SNS e as verificações | aceita |
 | [0021](docs/adr/0021-um-ambiente-so.md) | Um ambiente só na AWS, `demo`; o `ci` e o teste de fumaça seguram o defeito antes dela | aceita |
+| [0022](docs/adr/0022-send-urgency-notice-le-a-marca.md) | A `send-urgency-notice` lê só a marca do Urgency Notice antes de enviar; no Streams, lote com falha reentrega também os itens seguintes | proposta |
+| [0023](docs/adr/0023-remetente-e-o-primeiro-administrator.md) | O remetente do SES é o primeiro endereço da lista de Administrators; o e-mail chega sem autenticação, e cada Administrator o tira do spam por regra | proposta |
+| [0024](docs/adr/0024-teste-de-fumaca-apaga-a-propria-evaluation.md) | O teste de fumaça do deploy apaga a própria Evaluation, para ela não entrar no Weekly Report; falha se não conseguir | proposta |
 
 Contrato da rota: [`docs/contracts/receive-evaluation.md`](docs/contracts/receive-evaluation.md).
 
@@ -86,8 +89,8 @@ A estratégia é por comportamento que precisa ser provado, não por meta de cob
 2. **`receive-evaluation`** — cada linha da tabela de validação do contrato vira um caso; resposta `201` e
    `problem+json`; gravação contra o banco emulado em container.
 3. **`send-urgency-notice` e `send-weekly-report`** — só `CRITICAL` gera aviso; o mesmo evento duas vezes envia uma;
-   falha no item 6 de um lote reenvia só ele; Description com HTML sai escapada; rodar de novo a mesma semana dá o
-   mesmo relatório.
+   falha no item 6 de um lote envia de novo só o e-mail dele, embora os itens 6 a 10 voltem; Description com HTML sai
+   escapada; rodar de novo a mesma semana dá o mesmo relatório.
 4. **Nas regras críticas** (faixas, escape, fronteira de semana, teto), o teste é conferido quebrando o código de
    propósito: ele precisa ficar vermelho.
 5. **Ponta a ponta** — roteiro de validação manual e collection Postman no ambiente da cloud, que servem também de
