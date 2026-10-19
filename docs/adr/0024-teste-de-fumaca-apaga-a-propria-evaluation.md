@@ -1,6 +1,6 @@
 # ADR 0024 — O teste de fumaça apaga a própria Evaluation
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-18
 
 ## Contexto

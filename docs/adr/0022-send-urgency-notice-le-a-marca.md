@@ -1,6 +1,6 @@
 # ADR 0022 — A `send-urgency-notice` lê a marca do Urgency Notice antes de enviar
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-18
 - **Substitui em parte:** [ADR 0005](0005-entrega-pelo-menos-uma-vez.md) (o item sobre lote com falha) ·
   [ADR 0017](0017-tentativas-e-filas-de-falha.md) (a justificativa do tamanho do lote) ·

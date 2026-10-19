@@ -5,7 +5,7 @@ Tech Challenge da **Fase 4** da pós-graduação FIAP ADJT — Cloud Computing, 
 Plataforma de feedback de aulas: estudantes avaliam as aulas, administradores recebem aviso imediato dos
 itens críticos e um relatório semanal com a média das avaliações.
 
-> **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0021 `aceita`; 0022–0024 `proposta`). **Nada
+> **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0024, todas `aceita`). **Nada
 > implementado.** Não há decisão em aberto: o que falta é implementar.
 >
 > **Prazo de entrega: 17/11/2026.**
@@ -56,9 +56,9 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
 | [0019](docs/adr/0019-uma-role-por-funcao.md) | Uma role por função com privilégio mínimo; a função pública só grava | aceita |
 | [0020](docs/adr/0020-lista-de-administrators-no-github.md) | Lista de Administrators numa variável do GitHub, que gera os destinatários do SES, as assinaturas do SNS e as verificações | aceita |
 | [0021](docs/adr/0021-um-ambiente-so.md) | Um ambiente só na AWS, `demo`; o `ci` e o teste de fumaça seguram o defeito antes dela | aceita |
-| [0022](docs/adr/0022-send-urgency-notice-le-a-marca.md) | A `send-urgency-notice` lê só a marca do Urgency Notice antes de enviar; no Streams, lote com falha reentrega também os itens seguintes | proposta |
-| [0023](docs/adr/0023-remetente-e-o-primeiro-administrator.md) | O remetente do SES é o primeiro endereço da lista de Administrators; o e-mail chega sem autenticação, e cada Administrator o tira do spam por regra | proposta |
-| [0024](docs/adr/0024-teste-de-fumaca-apaga-a-propria-evaluation.md) | O teste de fumaça do deploy apaga a própria Evaluation, para ela não entrar no Weekly Report; falha se não conseguir | proposta |
+| [0022](docs/adr/0022-send-urgency-notice-le-a-marca.md) | A `send-urgency-notice` lê só a marca do Urgency Notice antes de enviar; no Streams, lote com falha reentrega também os itens seguintes | aceita |
+| [0023](docs/adr/0023-remetente-e-o-primeiro-administrator.md) | O remetente do SES é o primeiro endereço da lista de Administrators; o e-mail chega sem autenticação, e cada Administrator o tira do spam por regra | aceita |
+| [0024](docs/adr/0024-teste-de-fumaca-apaga-a-propria-evaluation.md) | O teste de fumaça do deploy apaga a própria Evaluation, para ela não entrar no Weekly Report; falha se não conseguir | aceita |
 
 Contrato da rota: [`docs/contracts/receive-evaluation.md`](docs/contracts/receive-evaluation.md).
 

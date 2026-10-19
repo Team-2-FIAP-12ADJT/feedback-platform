@@ -1,6 +1,6 @@
 # ADR 0023 — O remetente do SES é o primeiro endereço da lista de Administrators
 
-- **Status:** proposta
+- **Status:** aceita
 - **Data:** 2026-10-18
 
 ## Contexto
