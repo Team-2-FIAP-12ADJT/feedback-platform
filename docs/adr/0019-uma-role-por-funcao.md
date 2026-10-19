@@ -1,6 +1,7 @@
 # ADR 0019 — Uma role por função, com privilégio mínimo
 
 - **Status:** aceita
+- **Substituída em parte por:** [ADR 0022](0022-send-urgency-notice-le-a-marca.md) — a linha da `feedback-platform-send-urgency-notice`
 - **Data:** 2026-10-17
 
 ## Contexto
