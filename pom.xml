@@ -12,6 +12,7 @@
     <modules>
         <module>domain</module>
         <module>receive-evaluation</module>
+        <module>email-support</module>
     </modules>
 
     <properties>
