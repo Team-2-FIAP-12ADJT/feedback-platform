@@ -1,0 +1,624 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform:
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
+
+Description: >
+  feedback-platform - Infraestrutura como Codigo (AWS SAM) da plataforma de feedback de aulas em sa-east-1
+  para o ambiente demo. Atende as decisoes de arquitetura:
+  - ADR 0004: Java 25 nas tres funcoes com SnapStart;
+  - ADR 0006: Endpoint POST /avaliacao anonimo com limites de borda;
+  - ADR 0008: Weekly Report semanal acionado na segunda-feira as 08:00 no fuso America/Sao_Paulo;
+  - ADR 0009: Dados minimos gravados, TTL de 12 semanas e retencao curta de logs;
+  - ADR 0010: DynamoDB particionado por submissionDay com Streams ativo e DLQ;
+  - ADR 0011: Regiao sa-east-1 (Sao Paulo);
+  - ADR 0012: Infraestrutura como codigo com AWS SAM;
+  - ADR 0013: Roles restritas prefixadas com feedback-platform-;
+  - ADR 0014: Amazon SES para emails e Amazon SNS para Operational Alert;
+  - ADR 0015: API Gateway REST regional com Web ACL do AWS WAF (regras 8 KB e 300 req/5 min);
+  - ADR 0017: Tentativas e DLQ SQS (3 tentativas Urgency Notice, retries do Scheduler por ate 4 horas);
+  - ADR 0018: Criptografia padrao da AWS (SSE-SQS, SSE no DynamoDB, sem chave KMS propria);
+  - ADR 0019: Uma role IAM por funcao com privilegio minimo escrito a mao;
+  - ADR 0020: Lista de Administrators como fonte unica de identidades SES e assinaturas SNS;
+  - ADR 0021: Um ambiente unico (demo);
+  - ADR 0022: Restricao estrita na role do Urgency Notice (GetItem especifico na marca urgencyNoticeSentAt);
+  - ADR 0023: Remetente oficial do SES e o primeiro endereco da lista de Administrators.
+
+# -------------------------------------------------------------------------------------------------
+# PARAMETROS (ADR 0011, ADR 0015, ADR 0020, ADR 0021, ADR 0023)
+# -------------------------------------------------------------------------------------------------
+Parameters:
+  Environment:
+    Type: String
+    Default: demo
+    AllowedValues:
+      - demo
+    Description: >
+      Identificador do ambiente unico da plataforma na regiao sa-east-1 (ADR 0011, ADR 0021).
+
+  Administrators:
+    Type: String
+    Description: >
+      Lista de e-mails dos administrators separados por virgula. O primeiro endereco e o remetente oficial
+      do SES (ADR 0020, ADR 0023). Passado pela variavel ADMINISTRATORS do GitHub Actions.
+
+  Admin1:
+    Type: String
+    Default: ""
+    Description: >
+      Primeiro administrador da lista (remetente oficial e destinatario). Opcional se Administrators for informado (ADR 0020, 0023).
+
+  Admin2:
+    Type: String
+    Default: ""
+    Description: >
+      Segundo administrador opcional (ADR 0020).
+
+  Admin3:
+    Type: String
+    Default: ""
+    Description: >
+      Terceiro administrador opcional (ADR 0020).
+
+  Admin4:
+    Type: String
+    Default: ""
+    Description: >
+      Quarto administrador opcional (ADR 0020).
+
+  Admin5:
+    Type: String
+    Default: ""
+    Description: >
+      Quinto administrador opcional (ADR 0020).
+
+  WafMaxBodyBytes:
+    Type: Number
+    Default: 8192
+    Description: >
+      Tamanho maximo do corpo da requisicao em bytes inspecionado pelo AWS WAF (8 KB, ADR 0015).
+
+  WafRateLimitPerFiveMinutes:
+    Type: Number
+    Default: 300
+    Description: >
+      Limite maximo de requisicoes por IP em janela deslizante de 5 minutos no AWS WAF (ADR 0015).
+
+  ApiThrottlingRateLimit:
+    Type: Number
+    Default: 20
+    Description: >
+      Teto global de taxa no estagio do API Gateway REST (requisicoes por segundo, ADR 0015).
+
+  ApiThrottlingBurstLimit:
+    Type: Number
+    Default: 50
+    Description: >
+      Pico maximo (burst) de requisicoes simultaneas no API Gateway REST (ADR 0015).
+
+Conditions:
+  HasExplicitAdmin1: !Not [!Equals [!Ref Admin1, ""]]
+  HasExplicitAdmin2: !Not [!Equals [!Ref Admin2, ""]]
+  HasExplicitAdmin3: !Not [!Equals [!Ref Admin3, ""]]
+  HasExplicitAdmin4: !Not [!Equals [!Ref Admin4, ""]]
+  HasExplicitAdmin5: !Not [!Equals [!Ref Admin5, ""]]
+
+Globals:
+  Function:
+    Runtime: java25
+    Timeout: 30
+    MemorySize: 512
+    SnapStart:
+      ApplyOn: PublishedVersions
+    AutoPublishAlias: live
+
+Resources:
+  # -------------------------------------------------------------------------------------------------
+  # PERSISTENCIA: DynamoDB particionado por dia com Streams e TTL (ADR 0009, 0010, 0018)
+  # -------------------------------------------------------------------------------------------------
+  EvaluationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: evaluations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: submissionDay
+          AttributeType: S
+        - AttributeName: submissionKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: submissionDay
+          KeyType: HASH
+        - AttributeName: submissionKey
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      SSESpecification:
+        SSEEnabled: true
+
+  # -------------------------------------------------------------------------------------------------
+  # FILAS SQS DE FALHA (DLQs) (ADR 0010, 0017, 0018)
+  # -------------------------------------------------------------------------------------------------
+  UrgencyNoticeDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: feedback-platform-urgency-notice-dlq
+      MessageRetentionPeriod: 1209600 # 14 dias (ADR 0017)
+      SqsManagedSseEnabled: true       # Criptografia padrao SSE-SQS (ADR 0018)
+
+  WeeklyReportDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: feedback-platform-weekly-report-dlq
+      MessageRetentionPeriod: 1209600 # 14 dias (ADR 0017)
+      SqsManagedSseEnabled: true       # Criptografia padrao SSE-SQS (ADR 0018)
+
+  # -------------------------------------------------------------------------------------------------
+  # NOTIFICACOES: Amazon SNS (Operational Alert) (ADR 0014, 0018, 0020)
+  # -------------------------------------------------------------------------------------------------
+  OperationalAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: feedback-platform-operational-alert
+      DisplayName: Feedback Platform - Operational Alert
+      # Sem criptografia de servidor KMS customizada, conforme ADR 0018
+
+  # Assinaturas do SNS por Administrador
+  Admin1SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref OperationalAlertTopic
+      Protocol: email
+      Endpoint: !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
+
+  Admin2SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasExplicitAdmin2
+    Properties:
+      TopicArn: !Ref OperationalAlertTopic
+      Protocol: email
+      Endpoint: !Ref Admin2
+
+  Admin3SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasExplicitAdmin3
+    Properties:
+      TopicArn: !Ref OperationalAlertTopic
+      Protocol: email
+      Endpoint: !Ref Admin3
+
+  Admin4SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasExplicitAdmin4
+    Properties:
+      TopicArn: !Ref OperationalAlertTopic
+      Protocol: email
+      Endpoint: !Ref Admin4
+
+  Admin5SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasExplicitAdmin5
+    Properties:
+      TopicArn: !Ref OperationalAlertTopic
+      Protocol: email
+      Endpoint: !Ref Admin5
+
+  # -------------------------------------------------------------------------------------------------
+  # EMAIL: Amazon SES Identidades Verificadas (ADR 0020, 0023)
+  # -------------------------------------------------------------------------------------------------
+  Admin1SesIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
+
+  Admin2SesIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: HasExplicitAdmin2
+    Properties:
+      EmailIdentity: !Ref Admin2
+
+  Admin3SesIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: HasExplicitAdmin3
+    Properties:
+      EmailIdentity: !Ref Admin3
+
+  Admin4SesIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: HasExplicitAdmin4
+    Properties:
+      EmailIdentity: !Ref Admin4
+
+  Admin5SesIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: HasExplicitAdmin5
+    Properties:
+      EmailIdentity: !Ref Admin5
+
+  # -------------------------------------------------------------------------------------------------
+  # ROLES IAM COM PRIVILEGIO MINIMO (ADR 0013, 0019, 0022, 0023)
+  # -------------------------------------------------------------------------------------------------
+
+  # Role 1: feedback-platform-receive-evaluation (apenas PutItem na tabela e log proprio)
+  ReceiveEvaluationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: feedback-platform-receive-evaluation
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReceiveEvaluationExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowPutItemOnly
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt EvaluationsTable.Arn
+              - Sid: AllowCloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/feedback-platform-receive-evaluation*'
+
+  # Role 2: feedback-platform-send-urgency-notice (GetItem/UpdateItem restritos a marca, SES e DLQ)
+  SendUrgencyNoticeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: feedback-platform-send-urgency-notice
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SendUrgencyNoticeExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowDynamoDbStreams
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
+                Resource: !GetAtt EvaluationsTable.StreamArn
+              # GetItem condicionado especificamente a ler apenas a marca urgencyNoticeSentAt (ADR 0022)
+              - Sid: AllowGetItemOnlyUrgencyNoticeSentAt
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt EvaluationsTable.Arn
+                Condition:
+                  'ForAllValues:StringEquals':
+                    'dynamodb:Attributes':
+                      - submissionDay
+                      - submissionKey
+                      - urgencyNoticeSentAt
+                  StringEquals:
+                    'dynamodb:Select': 'SPECIFIC_ATTRIBUTES'
+              # UpdateItem condicionado a gravar apenas urgencyNoticeSentAt (ADR 0019, 0022)
+              - Sid: AllowUpdateItemOnlyUrgencyNoticeSentAt
+                Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt EvaluationsTable.Arn
+                Condition:
+                  'ForAllValues:StringEquals':
+                    'dynamodb:Attributes':
+                      - submissionDay
+                      - submissionKey
+                      - urgencyNoticeSentAt
+              # Envio de e-mail restrito ao primeiro administrador da lista (ADR 0019, 0023)
+              - Sid: AllowSendEmailFromVerifiedSender
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ses:FromAddress': !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
+              - Sid: AllowDlqSendMessage
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt UrgencyNoticeDlq.Arn
+              - Sid: AllowCloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/feedback-platform-send-urgency-notice*'
+
+  # Role 3: feedback-platform-send-weekly-report (apenas Query na tabela, SES e log proprio)
+  SendWeeklyReportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: feedback-platform-send-weekly-report
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SendWeeklyReportExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowQueryOnly
+                Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource: !GetAtt EvaluationsTable.Arn
+              # Envio de e-mail restrito ao primeiro administrador da lista (ADR 0019, 0023)
+              - Sid: AllowSendEmailFromVerifiedSender
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ses:FromAddress': !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
+              - Sid: AllowCloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/feedback-platform-send-weekly-report*'
+
+  # Role 4: feedback-platform-scheduler (apenas invocar a send-weekly-report e enviar para DLQ)
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: feedback-platform-scheduler
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SchedulerExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowInvokeWeeklyReportFunction
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt SendWeeklyReportFunction.Arn
+                  - !Sub '${SendWeeklyReportFunction.Arn}:*'
+              - Sid: AllowSendMessageToDlq
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt WeeklyReportDlq.Arn
+
+  # -------------------------------------------------------------------------------------------------
+  # BORDA: API Gateway REST Regional e AWS WAF (ADR 0006, 0015, 0018)
+  # -------------------------------------------------------------------------------------------------
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/feedback-platform-api-${Environment}'
+      RetentionInDays: 14 # Retencao curta de 14 dias para investigacao de enxurrada (ADR 0009, 0015)
+
+  RestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'feedback-platform-api-${Environment}'
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: !Ref ApiThrottlingRateLimit
+          ThrottlingBurstLimit: !Ref ApiThrottlingBurstLimit
+          LoggingLevel: INFO
+          DataTraceEnabled: false
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","caller":"$context.identity.caller","user":"$context.identity.user","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength"}'
+
+  # Web ACL do AWS WAF: Limite de 8 KB (413) e limite de taxa por IP (429)
+  WebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub 'feedback-platform-waf-${Environment}'
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub 'feedback-platform-waf-${Environment}'
+      CustomResponseBodies:
+        PayloadTooLargeResponse:
+          ContentType: APPLICATION_JSON
+          Content: '{"type":"about:blank","title":"Payload Too Large","status":413,"detail":"O corpo da requisicao excede o limite maximo de 8 KB"}'
+        TooManyRequestsResponse:
+          ContentType: APPLICATION_JSON
+          Content: '{"type":"about:blank","title":"Too Many Requests","status":429,"detail":"Limite de requisicoes por IP excedido"}'
+      Rules:
+        # Regra 1: Bloqueia corpos acima de 8 KB (8.192 bytes) com resposta 413 (ADR 0015)
+        - Name: EnforcePayloadSizeLimit8KB
+          Priority: 1
+          Statement:
+            SizeConstraintStatement:
+              FieldToMatch:
+                Body:
+                  OversizeHandling: MATCH
+              ComparisonOperator: GT
+              Size: !Ref WafMaxBodyBytes
+              TextTransformations:
+                - Priority: 0
+                  Type: NONE
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 413
+                CustomResponseBodyKey: PayloadTooLargeResponse
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: EnforcePayloadSizeLimit8KB
+
+        # Regra 2: Bloqueia mais de 300 requisicoes em 5 minutos por IP com resposta 429 (ADR 0015)
+        - Name: RateLimitPerIp300PerFiveMinutes
+          Priority: 2
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref WafRateLimitPerFiveMinutes
+              AggregateKeyType: IP
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 429
+                CustomResponseBodyKey: TooManyRequestsResponse
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitPerIp300PerFiveMinutes
+
+  WebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${RestApi}/stages/${Environment}'
+      WebACLArn: !GetAtt WebAcl.Arn
+
+  # -------------------------------------------------------------------------------------------------
+  # FUNCOES SERVERLESS LAMBDA EM JAVA 25 (ADR 0004, 0005, 0008, 0010, 0011, 0012, 0017)
+  # -------------------------------------------------------------------------------------------------
+
+  # Funcao 1: receive-evaluation (Quarkus, POST /avaliacao)
+  ReceiveEvaluationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: feedback-platform-receive-evaluation
+      CodeUri: receive-evaluation/target/function.zip
+      Handler: io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest
+      Role: !GetAtt ReceiveEvaluationRole.Arn
+      Environment:
+        Variables:
+          EVALUATIONS_TABLE: !Ref EvaluationsTable
+      Events:
+        PostEvaluation:
+          Type: Api
+          Properties:
+            RestApiId: !Ref RestApi
+            Path: /avaliacao
+            Method: post
+
+  # Funcao 2: send-urgency-notice (Spring Boot, DynamoDB Streams com FilterCriteria INSERT + CRITICAL)
+  SendUrgencyNoticeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: feedback-platform-send-urgency-notice
+      CodeUri: send-urgency-notice/target/send-urgency-notice-0.1.0-SNAPSHOT.jar
+      Handler: br.com.fiap.feedbackplatform.sendurgencynotice.SendUrgencyNoticeHandler::handleRequest
+      Role: !GetAtt SendUrgencyNoticeRole.Arn
+      Environment:
+        Variables:
+          ADMINISTRATORS: !Ref Administrators
+          EVALUATIONS_TABLE: !Ref EvaluationsTable
+      Events:
+        EvaluationStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt EvaluationsTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 10
+            BisectBatchOnFunctionError: true
+            MaximumRetryAttempts: 3
+            MaximumRecordAgeInSeconds: 3600 # 1 hora (ADR 0017)
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+            DestinationConfig:
+              OnFailure:
+                Destination: !GetAtt UrgencyNoticeDlq.Arn
+            FilterCriteria:
+              Filters:
+                - Pattern: '{"eventName": ["INSERT"], "dynamodb": {"NewImage": {"urgency": {"S": ["CRITICAL"]}}}}'
+
+  # Funcao 3: send-weekly-report (Spring Boot, EventBridge Scheduler ScheduleV2 as segundas 08:00)
+  SendWeeklyReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: feedback-platform-send-weekly-report
+      CodeUri: send-weekly-report/target/send-weekly-report-0.1.0-SNAPSHOT.jar
+      Handler: br.com.fiap.feedbackplatform.sendweeklyreport.SendWeeklyReportHandler::handleRequest
+      Role: !GetAtt SendWeeklyReportRole.Arn
+      Environment:
+        Variables:
+          ADMINISTRATORS: !Ref Administrators
+          EVALUATIONS_TABLE: !Ref EvaluationsTable
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2 # 2 tentativas assincronas da funcao (ADR 0017)
+      Events:
+        WeeklyReportSchedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: 'cron(0 8 ? * MON *)'
+            ScheduleExpressionTimezone: 'America/Sao_Paulo' # Fuso de Brasilia (ADR 0008)
+            RetryPolicy:
+              MaximumEventAgeInSeconds: 14400 # Tentativas do agendador por ate 4 horas (ADR 0017)
+              MaximumRetryAttempts: 2
+            DeadLetterConfig:
+              Type: SQS
+              Arn: !GetAtt WeeklyReportDlq.Arn
+            RoleArn: !GetAtt SchedulerRole.Arn
+
+# -------------------------------------------------------------------------------------------------
+# SAIDAS (OUTPUTS)
+# -------------------------------------------------------------------------------------------------
+Outputs:
+  ApiEndpoint:
+    Description: URL publica da rota POST /avaliacao no API Gateway REST
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/avaliacao'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiEndpoint'
+
+  EvaluationsTableName:
+    Description: Nome da tabela DynamoDB de avaliacoes
+    Value: !Ref EvaluationsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-EvaluationsTable'
+
+  OperationalAlertTopicArn:
+    Description: ARN do topico SNS para alarmes operacionais da plataforma
+    Value: !Ref OperationalAlertTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-OperationalAlertTopicArn'
+
+  ReceiveEvaluationFunctionArn:
+    Description: ARN da funcao Lambda receive-evaluation
+    Value: !GetAtt ReceiveEvaluationFunction.Arn
+
+  SendUrgencyNoticeFunctionArn:
+    Description: ARN da funcao Lambda send-urgency-notice
+    Value: !GetAtt SendUrgencyNoticeFunction.Arn
+
+  SendWeeklyReportFunctionArn:
+    Description: ARN da funcao Lambda send-weekly-report
+    Value: !GetAtt SendWeeklyReportFunction.Arn
