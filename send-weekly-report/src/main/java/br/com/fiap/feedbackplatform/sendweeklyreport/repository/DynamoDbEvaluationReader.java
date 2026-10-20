@@ -38,6 +38,13 @@ public class DynamoDbEvaluationReader implements EvaluationReader {
         this.tableName = Objects.requireNonNull(config.tableName(), "tableName must not be null");
     }
 
+    /**
+     * Consulta todas as Evaluations nos sete dias da ReportWeek informada, paginando cada partição diária até o fim,
+     * conforme ADRs 0008 e 0010.
+     *
+     * @param week ReportWeek coberta pela consulta
+     * @return lista imutável com todas as Evaluations da semana
+     */
     @Override
     public List<Evaluation> findByReportWeek(ReportWeek week) {
         Objects.requireNonNull(week, "week must not be null");

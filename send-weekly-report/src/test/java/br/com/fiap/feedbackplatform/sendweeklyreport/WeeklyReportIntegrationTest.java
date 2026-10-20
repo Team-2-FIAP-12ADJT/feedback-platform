@@ -23,21 +23,33 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest;
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement;
 import software.amazon.awssdk.services.dynamodb.model.KeyType;
 import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.PutRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.WriteRequest;
 import software.amazon.awssdk.services.ses.SesClient;
 import software.amazon.awssdk.services.ses.model.SendEmailRequest;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -185,6 +197,94 @@ class WeeklyReportIntegrationTest {
         assertThat(request.message().subject().data()).isEqualTo("Relatório semanal 28/09–04/10: nenhuma avaliação");
         assertThat(request.message().body().html().data()).contains("Média das avaliações:</strong> sem avaliações");
         assertThat(request.message().body().text().data()).contains("Média das avaliações: sem avaliações");
+    }
+
+    @Test
+    @DisplayName("Pagina consulta real acima de 1 MB em um único submissionDay usando LastEvaluatedKey até o fim (ADR 0008, 0010)")
+    void shouldPaginateRealQueryOverOneMegabyteAcrossMultiplePages() {
+        Assumptions.assumeTrue(dockerAvailable, "Docker daemon não está disponível neste ambiente");
+
+        // Semana 2026-W30 (20/07/2026 a 26/07/2026), isolada dos demais testes
+        ReportWeek week = ReportWeek.parse("2026-W30");
+        String targetSubmissionDay = "2026-07-22";
+        int totalItemsToInsert = 1_200;
+        String thousandCharDescription = "A".repeat(1_000);
+
+        List<WriteRequest> pendingWrites = new ArrayList<>(25);
+        for (int i = 0; i < totalItemsToInsert; i++) {
+            UUID id = UUID.randomUUID();
+            String submissionTime = Instant.parse("2026-07-22T12:00:00Z").plusSeconds(i).toString();
+            Map<String, AttributeValue> item = new HashMap<>();
+            item.put("submissionDay", AttributeValue.fromS(targetSubmissionDay));
+            item.put("submissionKey", AttributeValue.fromS(submissionTime + "#" + id));
+            item.put("id", AttributeValue.fromS(id.toString()));
+            item.put("description", AttributeValue.fromS(thousandCharDescription));
+            item.put("score", AttributeValue.fromN("8"));
+            item.put("urgency", AttributeValue.fromS(Urgency.LOW.name()));
+            item.put("submissionTime", AttributeValue.fromS(submissionTime));
+            item.put("expiresAt", AttributeValue.fromN(Long.toString(Instant.parse(submissionTime).getEpochSecond() + 86400L * 84L)));
+
+            pendingWrites.add(WriteRequest.builder()
+                    .putRequest(PutRequest.builder().item(item).build())
+                    .build());
+
+            if (pendingWrites.size() == 25) {
+                flushBatch(pendingWrites);
+                pendingWrites.clear();
+            }
+        }
+        if (!pendingWrites.isEmpty()) {
+            flushBatch(pendingWrites);
+        }
+
+        List<QueryRequest> recordedQueries = new ArrayList<>();
+        DynamoDbClient recordingClient = (DynamoDbClient) Proxy.newProxyInstance(
+                DynamoDbClient.class.getClassLoader(),
+                new Class<?>[]{DynamoDbClient.class},
+                (proxy, method, args) -> {
+                    if ("query".equals(method.getName()) && args != null && args.length == 1 && args[0] instanceof QueryRequest qr) {
+                        recordedQueries.add(qr);
+                    }
+                    try {
+                        return method.invoke(dynamoDbClient, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                }
+        );
+
+        DynamoDbEvaluationReader reader = new DynamoDbEvaluationReader(recordingClient, config);
+        List<Evaluation> evaluations = reader.findByReportWeek(week);
+
+        // Total de Evaluations devolvidas = total gravado
+        assertThat(evaluations).hasSize(totalItemsToInsert);
+
+        // Ao menos 8 Query no total (6 dias com 1 página + 1 dia paginado em 2 páginas = 8 Queries)
+        assertThat(recordedQueries).hasSize(8);
+
+        // Os 7 submissionDay da semana consultados
+        Set<String> queriedDays = recordedQueries.stream()
+                .map(q -> q.expressionAttributeValues().get(":day").s())
+                .collect(Collectors.toSet());
+        Set<String> expectedDays = week.days().stream()
+                .map(LocalDate::toString)
+                .collect(Collectors.toSet());
+        assertThat(queriedDays).hasSize(7).isEqualTo(expectedDays);
+
+        // Ao menos uma Query com exclusiveStartKey preenchida
+        long paginatedQueries = recordedQueries.stream()
+                .filter(q -> q.hasExclusiveStartKey() && !q.exclusiveStartKey().isEmpty())
+                .count();
+        assertThat(paginatedQueries).isEqualTo(1);
+    }
+
+    private void flushBatch(List<WriteRequest> batch) {
+        Map<String, List<WriteRequest>> requestItems = Map.of(TABLE_NAME, List.copyOf(batch));
+        while (requestItems != null && !requestItems.isEmpty()) {
+            BatchWriteItemResponse response = dynamoDbClient.batchWriteItem(
+                    BatchWriteItemRequest.builder().requestItems(requestItems).build());
+            requestItems = response.hasUnprocessedItems() ? response.unprocessedItems() : Map.of();
+        }
     }
 
     private void insertEvaluation(UUID id, String description, int score, Urgency urgency, String submissionDay, String submissionTime) {

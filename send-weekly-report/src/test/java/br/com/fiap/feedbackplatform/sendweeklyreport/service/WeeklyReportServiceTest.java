@@ -32,9 +32,11 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -244,6 +246,8 @@ class WeeklyReportServiceTest {
                 .isEqualTo(new ReportWeek(2026, 46));
         assertThat(service.resolveWeek("\"2026-W46\""))
                 .isEqualTo(new ReportWeek(2026, 46));
+        assertThat(service.resolveWeek(" \"2026-W46\" "))
+                .isEqualTo(new ReportWeek(2026, 46));
 
         // Mapa com 'reportWeek'
         assertThat(service.resolveWeek(Map.of("reportWeek", "2026-W46")))
@@ -257,10 +261,95 @@ class WeeklyReportServiceTest {
         assertThat(service.resolveWeek(Map.of("time", "2026-11-16T11:00:00Z")))
                 .isEqualTo(new ReportWeek(2026, 46));
 
+        // Envelope completo do EventBridge ScheduledEvent contendo 'time' e demais metadados
+        Map<String, Object> scheduledEventEnvelope = Map.of(
+                "version", "0",
+                "id", "53dc4d37-cffa-4f76-80c9-8b7d4a4d2eaa",
+                "detail-type", "Scheduled Event",
+                "source", "aws.scheduler",
+                "account", "123456789012",
+                "time", "2026-11-16T11:00:00Z",
+                "region", "sa-east-1",
+                "resources", List.of("arn:aws:scheduler:sa-east-1:123456789012:schedule/default/weekly-report"),
+                "detail", Map.of()
+        );
+        assertThat(service.resolveWeek(scheduledEventEnvelope))
+                .isEqualTo(new ReportWeek(2026, 46));
+
         // Mapa vazio ou nulo recorre ao clock (referência 16/11/2026 11:00 UTC -> semana anterior W46)
         assertThat(service.resolveWeek(Map.of()))
                 .isEqualTo(new ReportWeek(2026, 46));
         assertThat(service.resolveWeek(null))
                 .isEqualTo(new ReportWeek(2026, 46));
+
+        // String ISO-8601 de Instant calcula a semana fechada anterior
+        assertThat(service.resolveWeek("2026-11-16T11:00:00Z"))
+                .isEqualTo(new ReportWeek(2026, 46));
+    }
+
+    @Test
+    @DisplayName("Resolução de ReportWeek rejeita entradas inválidas com IllegalArgumentException sem expor payload (ADR 0008, 0017)")
+    void shouldRejectInvalidInputsWhenResolvingReportWeek() {
+        List<Object> invalidInputs = List.of(
+                42,
+                "",
+                "   ",
+                "null",
+                "abc",
+                Map.of("reportweek", "2026-W46"),
+                Map.of("version", "0", "id", "x"),
+                Map.of("reportWeek", "2026-W46", "week", "2026-W45"),
+                Map.of("reportWeek", "2026-W46", "time", "2026-11-16T11:00:00Z"),
+                Map.of("reportWeek", 46),
+                Map.of("reportWeek", " ")
+        );
+
+        for (Object invalidInput : invalidInputs) {
+            assertThatThrownBy(() -> service.resolveWeek(invalidInput))
+                    .as("Entrada inválida deveria lançar IllegalArgumentException: %s", invalidInput)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Aceitos:");
+        }
+
+        // Chaves desconhecidas ou múltiplas chaves nunca são ecoadas na mensagem da exceção
+        assertThatThrownBy(() -> service.resolveWeek(Map.of("segredo@exemplo.com", "x")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Aceitos:")
+                .hasMessageNotContaining("segredo@exemplo.com");
+
+        assertThatThrownBy(() -> service.resolveWeek(Map.of("segredo@exemplo.com", "x", "reportWeek", "2026-W46")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Aceitos:")
+                .hasMessageNotContaining("segredo@exemplo.com")
+                .hasMessageNotContaining("2026-W46");
+
+        // Valores inválidos em String ou em Map/envelope com "time" não vazam o texto na exceção nem na cadeia de causas
+        List<Object> secretInputs = List.of(
+                "segredo@exemplo.com",
+                Map.of("time", "segredo@exemplo.com"),
+                Map.of("version", "0", "id", "x", "time", "segredo@exemplo.com")
+        );
+        for (Object secretInput : secretInputs) {
+            Throwable thrown = catchThrowable(() -> service.resolveWeek(secretInput));
+            assertThat(thrown)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Aceitos:");
+            for (Throwable current = thrown; current != null; current = current.getCause()) {
+                assertThat(current.getMessage()).doesNotContain("segredo@exemplo.com");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Entrada inválida em process(...) propaga IllegalArgumentException e não consulta reader nem envia e-mail (ADR 0017)")
+    void shouldPropagateExceptionAndNotCallReaderOrSesWhenInputIsInvalid() {
+        Map<String, Object> invalidInput = Map.of("reportweek", "2026-W46");
+
+        assertThatThrownBy(() -> service.process(invalidInput))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageNotContaining("reportweek")
+                .hasMessageNotContaining("2026-W46");
+
+        verifyNoInteractions(evaluationReader, sesClient);
     }
 }

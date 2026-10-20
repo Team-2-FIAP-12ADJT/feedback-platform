@@ -38,6 +38,14 @@ public class SendWeeklyReportHandler implements RequestHandler<Object, String> {
         return applicationContext.getBean(WeeklyReportService.class);
     }
 
+    /**
+     * Processa o evento de invocação da AWS Lambda para consolidar e enviar o Weekly Report,
+     * propagando falhas sem engoli-las para acionar retentativas e DLQ, conforme ADRs 0008 e 0017.
+     *
+     * @param input payload de entrada da invocação Lambda (evento agendado, mapa de parâmetros ou texto)
+     * @param context contexto de execução da AWS Lambda
+     * @return resumo do processamento da ReportWeek enviada
+     */
     @Override
     public String handleRequest(Object input, Context context) {
         return service.process(input);

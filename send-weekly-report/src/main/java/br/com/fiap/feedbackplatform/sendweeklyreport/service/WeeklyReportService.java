@@ -10,6 +10,7 @@ import br.com.fiap.feedbackplatform.sendweeklyreport.repository.EvaluationReader
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -31,6 +32,8 @@ import software.amazon.awssdk.services.ses.model.SendEmailRequest;
 public class WeeklyReportService {
 
     private static final Logger log = LoggerFactory.getLogger(WeeklyReportService.class);
+    private static final String ACCEPTED_FORMATS_MESSAGE =
+            "Aceitos: null, Map vazio, String ('yyyy-Www' ou Instant ISO-8601), Map manual com única chave ('reportWeek' ou 'week') e valor String não em branco, ou Map de evento contendo chave 'time' com Instant ISO-8601.";
 
     private final EvaluationReader evaluationReader;
     private final WeeklyReportConfig config;
@@ -100,9 +103,13 @@ public class WeeklyReportService {
 
     /**
      * Resolve a ReportWeek a partir do input da Lambda ou do relógio do sistema, conforme ADRs 0008 e 0017.
+     * Aceita {@code null} ou {@code Map} vazio (usando o {@code Clock}), {@code String} ({@code yyyy-Www} ou
+     * {@code Instant} ISO-8601), {@code Map} com única chave {@code reportWeek} ou {@code week}, ou {@code Map}
+     * de evento agendado contendo a chave {@code time} (ignorando os demais campos do envelope).
      *
      * @param input entrada da invocação Lambda
      * @return ReportWeek calculada
+     * @throws IllegalArgumentException quando a entrada não corresponder aos formatos aceitos
      */
     public ReportWeek resolveWeek(Object input) {
         if (input == null) {
@@ -110,34 +117,77 @@ public class WeeklyReportService {
         }
 
         if (input instanceof String str) {
-            String trimmed = str.trim().replaceAll("^\"|\"$", "");
+            String trimmed = str.trim().replaceAll("^\"|\"$", "").trim();
             if (trimmed.isEmpty() || "null".equalsIgnoreCase(trimmed)) {
-                return ReportWeek.previousClosedWeek(clock.instant());
+                throw new IllegalArgumentException(
+                        "Entrada String em branco ou inválida para resolução de ReportWeek. " + ACCEPTED_FORMATS_MESSAGE);
             }
-            if (trimmed.contains("T") || trimmed.contains("Z")) {
-                return ReportWeek.previousClosedWeek(Instant.parse(trimmed));
+            try {
+                return ReportWeek.parse(trimmed);
+            } catch (IllegalArgumentException weekEx) {
+                try {
+                    return ReportWeek.previousClosedWeek(Instant.parse(trimmed));
+                } catch (DateTimeParseException instantEx) {
+                    throw new IllegalArgumentException(
+                            "Entrada String não representa uma ReportWeek nem um Instant ISO-8601 válido. "
+                                    + ACCEPTED_FORMATS_MESSAGE);
+                }
             }
-            return ReportWeek.parse(trimmed);
         }
 
         if (input instanceof Map<?, ?> map) {
-            Object weekVal = map.get("reportWeek");
-            if (weekVal == null) {
-                weekVal = map.get("week");
-            }
-            if (weekVal != null && !weekVal.toString().isBlank()) {
-                return ReportWeek.parse(weekVal.toString().trim());
+            if (map.isEmpty()) {
+                return ReportWeek.previousClosedWeek(clock.instant());
             }
 
-            Object timeVal = map.get("time");
-            if (timeVal != null && !timeVal.toString().isBlank()) {
-                return ReportWeek.previousClosedWeek(Instant.parse(timeVal.toString().trim()));
+            boolean hasReportWeek = map.containsKey("reportWeek");
+            boolean hasWeek = map.containsKey("week");
+            if (hasReportWeek || hasWeek) {
+                if (map.size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Mapa de entrada com 'reportWeek' ou 'week' deve conter exatamente uma chave, mas recebeu "
+                                    + map.size() + " chaves. " + ACCEPTED_FORMATS_MESSAGE);
+                }
+                String key = hasReportWeek ? "reportWeek" : "week";
+                Object rawValue = map.get(key);
+                if (!(rawValue instanceof String valueStr) || valueStr.isBlank()) {
+                    String valueType = rawValue == null ? "null" : rawValue.getClass().getSimpleName();
+                    throw new IllegalArgumentException(
+                            "Valor da chave '" + key + "' deve ser String não em branco (tipo recebido: "
+                                    + valueType + "). " + ACCEPTED_FORMATS_MESSAGE);
+                }
+                try {
+                    return ReportWeek.parse(valueStr.trim());
+                } catch (IllegalArgumentException ex) {
+                    throw new IllegalArgumentException(
+                            "Valor da chave '" + key + "' não representa uma ReportWeek válida. "
+                                    + ACCEPTED_FORMATS_MESSAGE);
+                }
             }
 
-            return ReportWeek.previousClosedWeek(clock.instant());
+            if (map.containsKey("time")) {
+                Object rawTime = map.get("time");
+                if (!(rawTime instanceof String timeStr) || timeStr.isBlank()) {
+                    String valueType = rawTime == null ? "null" : rawTime.getClass().getSimpleName();
+                    throw new IllegalArgumentException(
+                            "Valor da chave 'time' deve ser String não em branco (tipo recebido: "
+                                    + valueType + "). " + ACCEPTED_FORMATS_MESSAGE);
+                }
+                try {
+                    return ReportWeek.previousClosedWeek(Instant.parse(timeStr.trim()));
+                } catch (DateTimeParseException ex) {
+                    throw new IllegalArgumentException(
+                            "Valor da chave 'time' não é um Instant ISO-8601 válido. " + ACCEPTED_FORMATS_MESSAGE);
+                }
+            }
+
+            throw new IllegalArgumentException(
+                    "Chave de entrada não reconhecida no mapa. " + ACCEPTED_FORMATS_MESSAGE);
         }
 
-        return ReportWeek.previousClosedWeek(clock.instant());
+        throw new IllegalArgumentException(
+                "Tipo de entrada não suportado para resolução de ReportWeek: "
+                        + input.getClass().getSimpleName() + ". " + ACCEPTED_FORMATS_MESSAGE);
     }
 
     private void sendEmail(EmailMessage message) {
