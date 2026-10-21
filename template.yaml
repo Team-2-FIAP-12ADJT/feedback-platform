@@ -148,12 +148,14 @@ Resources:
   # -------------------------------------------------------------------------------------------------
   # ROLES IAM COM PRIVILEGIO MINIMO (ADR 0013, 0019, 0022, 0023)
   # -------------------------------------------------------------------------------------------------
+  # Sem o PermissionsBoundary, a role de deploy recusa iam:CreateRole/iam:PutRolePolicy (ADR 0013)
 
   # Role 1: feedback-platform-receive-evaluation (apenas PutItem na tabela e log proprio)
   ReceiveEvaluationRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: feedback-platform-receive-evaluation
+      PermissionsBoundary: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/feedback-platform-function-boundary'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -184,6 +186,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: feedback-platform-send-urgency-notice
+      PermissionsBoundary: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/feedback-platform-function-boundary'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -261,6 +264,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: feedback-platform-send-weekly-report
+      PermissionsBoundary: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/feedback-platform-function-boundary'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -302,6 +306,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: feedback-platform-scheduler
+      PermissionsBoundary: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/feedback-platform-function-boundary'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -330,26 +335,7 @@ Resources:
   # -------------------------------------------------------------------------------------------------
   # BORDA: API Gateway REST Regional e AWS WAF (ADR 0006, 0013, 0015, 0018, 0021)
   # -------------------------------------------------------------------------------------------------
-  # AWS::ApiGateway::Account e singleton por conta/regiao; seguro no template porque ha um unico ambiente demo (ADR 0021)
-  ApiGatewayCloudWatchRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: feedback-platform-apigateway-cloudwatch
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: apigateway.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
-
-  ApiGatewayAccount:
-    Type: AWS::ApiGateway::Account
-    Properties:
-      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
-
+  # O log da REST API depende da role de logs configurada na conta pela pilha de bootstrap (infra/bootstrap-oidc.yaml, ADR 0013/0015), aplicada antes do 1o deploy
   ApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -358,7 +344,6 @@ Resources:
 
   RestApi:
     Type: AWS::Serverless::Api
-    DependsOn: ApiGatewayAccount
     Properties:
       Name: !Sub 'feedback-platform-api-${Environment}'
       StageName: !Ref Environment
