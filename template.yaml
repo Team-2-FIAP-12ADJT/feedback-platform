@@ -4,25 +4,24 @@ Transform:
   - AWS::Serverless-2016-10-31
 
 Description: >
-  feedback-platform - Infraestrutura como Codigo (AWS SAM) da plataforma de feedback de aulas em sa-east-1
-  para o ambiente demo. Atende as decisoes de arquitetura:
-  - ADR 0004: Java 25 nas tres funcoes com SnapStart;
-  - ADR 0006: Endpoint POST /avaliacao anonimo com limites de borda;
-  - ADR 0008: Weekly Report semanal acionado na segunda-feira as 08:00 no fuso America/Sao_Paulo;
-  - ADR 0009: Dados minimos gravados, TTL de 12 semanas e retencao curta de logs;
-  - ADR 0010: DynamoDB particionado por submissionDay com Streams ativo e DLQ;
-  - ADR 0011: Regiao sa-east-1 (Sao Paulo);
-  - ADR 0012: Infraestrutura como codigo com AWS SAM;
-  - ADR 0013: Roles restritas prefixadas com feedback-platform-;
-  - ADR 0014: Amazon SES para emails e Amazon SNS para Operational Alert;
-  - ADR 0015: API Gateway REST regional com Web ACL do AWS WAF (regras 8 KB e 300 req/5 min);
-  - ADR 0017: Tentativas e DLQ SQS (3 tentativas Urgency Notice, retries do Scheduler por ate 4 horas);
-  - ADR 0018: Criptografia padrao da AWS (SSE-SQS, SSE no DynamoDB, sem chave KMS propria);
-  - ADR 0019: Uma role IAM por funcao com privilegio minimo escrito a mao;
-  - ADR 0020: Lista de Administrators como fonte unica de identidades SES e assinaturas SNS;
-  - ADR 0021: Um ambiente unico (demo);
-  - ADR 0022: Restricao estrita na role do Urgency Notice (GetItem especifico na marca urgencyNoticeSentAt);
-  - ADR 0023: Remetente oficial do SES e o primeiro endereco da lista de Administrators.
+  feedback-platform - IaC (AWS SAM) em sa-east-1 (demo).
+  - ADR 0004: Java 25 nas 3 funcoes + SnapStart;
+  - ADR 0006: POST /avaliacao anonimo com limites na borda;
+  - ADR 0008: Weekly Report seg 08:00 America/Sao_Paulo;
+  - ADR 0009: Dados minimos, TTL 12 sem, logs curtos;
+  - ADR 0010: DynamoDB por submissionDay + Streams/DLQ;
+  - ADR 0011: Regiao sa-east-1;
+  - ADR 0012: IaC com AWS SAM;
+  - ADR 0013: Roles prefixadas feedback-platform-;
+  - ADR 0014: SES (funcoes) e SNS (Operational Alert);
+  - ADR 0015: API Gateway REST + WAF (8 KB, 300 req/5 min);
+  - ADR 0017: Retries/DLQs SQS (3 Urgency Notice, 4h Scheduler);
+  - ADR 0018: Criptografia padrao AWS (SSE-SQS, DynamoDB);
+  - ADR 0019: 1 role IAM por funcao (privilegio minimo);
+  - ADR 0020: Administrators fonte unica de SES e SNS;
+  - ADR 0021: Ambiente unico (demo);
+  - ADR 0022: GetItem/UpdateItem so em urgencyNoticeSentAt;
+  - ADR 0023: Remetente SES = 1o de Administrators.
 
 # -------------------------------------------------------------------------------------------------
 # PARAMETROS (ADR 0011, ADR 0015, ADR 0020, ADR 0021, ADR 0023)
@@ -37,40 +36,10 @@ Parameters:
       Identificador do ambiente unico da plataforma na regiao sa-east-1 (ADR 0011, ADR 0021).
 
   Administrators:
-    Type: String
+    Type: CommaDelimitedList
     Description: >
-      Lista de e-mails dos administrators separados por virgula. O primeiro endereco e o remetente oficial
-      do SES (ADR 0020, ADR 0023). Passado pela variavel ADMINISTRATORS do GitHub Actions.
-
-  Admin1:
-    Type: String
-    Default: ""
-    Description: >
-      Primeiro administrador da lista (remetente oficial e destinatario). Opcional se Administrators for informado (ADR 0020, 0023).
-
-  Admin2:
-    Type: String
-    Default: ""
-    Description: >
-      Segundo administrador opcional (ADR 0020).
-
-  Admin3:
-    Type: String
-    Default: ""
-    Description: >
-      Terceiro administrador opcional (ADR 0020).
-
-  Admin4:
-    Type: String
-    Default: ""
-    Description: >
-      Quarto administrador opcional (ADR 0020).
-
-  Admin5:
-    Type: String
-    Default: ""
-    Description: >
-      Quinto administrador opcional (ADR 0020).
+      Lista de e-mails dos administrators separados por virgula (sem espaco depois da virgula). O primeiro endereco
+      e o remetente oficial do SES (ADR 0020, ADR 0023). Passado pela variavel ADMINISTRATORS do GitHub Actions.
 
   WafMaxBodyBytes:
     Type: Number
@@ -95,13 +64,6 @@ Parameters:
     Default: 50
     Description: >
       Pico maximo (burst) de requisicoes simultaneas no API Gateway REST (ADR 0015).
-
-Conditions:
-  HasExplicitAdmin1: !Not [!Equals [!Ref Admin1, ""]]
-  HasExplicitAdmin2: !Not [!Equals [!Ref Admin2, ""]]
-  HasExplicitAdmin3: !Not [!Equals [!Ref Admin3, ""]]
-  HasExplicitAdmin4: !Not [!Equals [!Ref Admin4, ""]]
-  HasExplicitAdmin5: !Not [!Equals [!Ref Admin5, ""]]
 
 Globals:
   Function:
@@ -166,77 +128,22 @@ Resources:
       DisplayName: Feedback Platform - Operational Alert
       # Sem criptografia de servidor KMS customizada, conforme ADR 0018
 
-  # Assinaturas do SNS por Administrador
-  Admin1SnsSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref OperationalAlertTopic
-      Protocol: email
-      Endpoint: !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
-
-  Admin2SnsSubscription:
-    Type: AWS::SNS::Subscription
-    Condition: HasExplicitAdmin2
-    Properties:
-      TopicArn: !Ref OperationalAlertTopic
-      Protocol: email
-      Endpoint: !Ref Admin2
-
-  Admin3SnsSubscription:
-    Type: AWS::SNS::Subscription
-    Condition: HasExplicitAdmin3
-    Properties:
-      TopicArn: !Ref OperationalAlertTopic
-      Protocol: email
-      Endpoint: !Ref Admin3
-
-  Admin4SnsSubscription:
-    Type: AWS::SNS::Subscription
-    Condition: HasExplicitAdmin4
-    Properties:
-      TopicArn: !Ref OperationalAlertTopic
-      Protocol: email
-      Endpoint: !Ref Admin4
-
-  Admin5SnsSubscription:
-    Type: AWS::SNS::Subscription
-    Condition: HasExplicitAdmin5
-    Properties:
-      TopicArn: !Ref OperationalAlertTopic
-      Protocol: email
-      Endpoint: !Ref Admin5
-
-  # -------------------------------------------------------------------------------------------------
-  # EMAIL: Amazon SES Identidades Verificadas (ADR 0020, 0023)
-  # -------------------------------------------------------------------------------------------------
-  Admin1SesIdentity:
-    Type: AWS::SES::EmailIdentity
-    Properties:
-      EmailIdentity: !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
-
-  Admin2SesIdentity:
-    Type: AWS::SES::EmailIdentity
-    Condition: HasExplicitAdmin2
-    Properties:
-      EmailIdentity: !Ref Admin2
-
-  Admin3SesIdentity:
-    Type: AWS::SES::EmailIdentity
-    Condition: HasExplicitAdmin3
-    Properties:
-      EmailIdentity: !Ref Admin3
-
-  Admin4SesIdentity:
-    Type: AWS::SES::EmailIdentity
-    Condition: HasExplicitAdmin4
-    Properties:
-      EmailIdentity: !Ref Admin4
-
-  Admin5SesIdentity:
-    Type: AWS::SES::EmailIdentity
-    Condition: HasExplicitAdmin5
-    Properties:
-      EmailIdentity: !Ref Admin5
+  # Assinatura SNS (Operational Alert) e identidade verificada no SES por Administrator (ADR 0020, 0023)
+  # Fn::ForEach exige SAM CLI >= 1.161.0 com --language-extensions em cada comando
+  # (ou SAM_CLI_ENABLE_LANGUAGE_EXTENSIONS=1) (ADR 0020)
+  Fn::ForEach::AdminResources:
+    - AdminEmail
+    - !Ref Administrators
+    - 'Admin&{AdminEmail}SnsSubscription':
+        Type: AWS::SNS::Subscription
+        Properties:
+          TopicArn: !Ref OperationalAlertTopic
+          Protocol: email
+          Endpoint: !Ref AdminEmail
+      'Admin&{AdminEmail}SesIdentity':
+        Type: AWS::SES::EmailIdentity
+        Properties:
+          EmailIdentity: !Ref AdminEmail
 
   # -------------------------------------------------------------------------------------------------
   # ROLES IAM COM PRIVILEGIO MINIMO (ADR 0013, 0019, 0022, 0023)
@@ -311,7 +218,7 @@ Resources:
                       - urgencyNoticeSentAt
                   StringEquals:
                     'dynamodb:Select': 'SPECIFIC_ATTRIBUTES'
-              # UpdateItem condicionado a gravar apenas urgencyNoticeSentAt (ADR 0019, 0022)
+              # UpdateItem condicionado a gravar apenas urgencyNoticeSentAt sem retornar atributos (ADR 0019, 0022)
               - Sid: AllowUpdateItemOnlyUrgencyNoticeSentAt
                 Effect: Allow
                 Action:
@@ -323,15 +230,19 @@ Resources:
                       - submissionDay
                       - submissionKey
                       - urgencyNoticeSentAt
-              # Envio de e-mail restrito ao primeiro administrador da lista (ADR 0019, 0023)
+                  StringEqualsIfExists:
+                    'dynamodb:ReturnValues': 'NONE'
+              # Fn::Join nao aceita funcao no delimitador para montar ARN por item; restringe Resource as identidades da conta/regiao e destinatarios/remetente via Condition (ADR 0019, 0020, 0023)
               - Sid: AllowSendEmailFromVerifiedSender
                 Effect: Allow
                 Action:
                   - ses:SendEmail
-                Resource: '*'
+                Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
                 Condition:
                   StringEquals:
-                    'ses:FromAddress': !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
+                    'ses:FromAddress': !Select [0, !Ref Administrators]
+                  'ForAllValues:StringEquals':
+                    'ses:Recipients': !Ref Administrators
               - Sid: AllowDlqSendMessage
                 Effect: Allow
                 Action:
@@ -367,15 +278,17 @@ Resources:
                 Action:
                   - dynamodb:Query
                 Resource: !GetAtt EvaluationsTable.Arn
-              # Envio de e-mail restrito ao primeiro administrador da lista (ADR 0019, 0023)
+              # Fn::Join nao aceita funcao no delimitador para montar ARN por item; restringe Resource as identidades da conta/regiao e destinatarios/remetente via Condition (ADR 0019, 0020, 0023)
               - Sid: AllowSendEmailFromVerifiedSender
                 Effect: Allow
                 Action:
                   - ses:SendEmail
-                Resource: '*'
+                Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
                 Condition:
                   StringEquals:
-                    'ses:FromAddress': !If [HasExplicitAdmin1, !Ref Admin1, !Select [0, !Split [",", !Ref Administrators]]]
+                    'ses:FromAddress': !Select [0, !Ref Administrators]
+                  'ForAllValues:StringEquals':
+                    'ses:Recipients': !Ref Administrators
               - Sid: AllowCloudWatchLogs
                 Effect: Allow
                 Action:
@@ -415,8 +328,28 @@ Resources:
                 Resource: !GetAtt WeeklyReportDlq.Arn
 
   # -------------------------------------------------------------------------------------------------
-  # BORDA: API Gateway REST Regional e AWS WAF (ADR 0006, 0015, 0018)
+  # BORDA: API Gateway REST Regional e AWS WAF (ADR 0006, 0013, 0015, 0018, 0021)
   # -------------------------------------------------------------------------------------------------
+  # AWS::ApiGateway::Account e singleton por conta/regiao; seguro no template porque ha um unico ambiente demo (ADR 0021)
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: feedback-platform-apigateway-cloudwatch
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
   ApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -425,6 +358,7 @@ Resources:
 
   RestApi:
     Type: AWS::Serverless::Api
+    DependsOn: ApiGatewayAccount
     Properties:
       Name: !Sub 'feedback-platform-api-${Environment}'
       StageName: !Ref Environment
@@ -540,7 +474,7 @@ Resources:
       Role: !GetAtt SendUrgencyNoticeRole.Arn
       Environment:
         Variables:
-          ADMINISTRATORS: !Ref Administrators
+          ADMINISTRATORS: !Join [',', !Ref Administrators]
           EVALUATIONS_TABLE: !Ref EvaluationsTable
       Events:
         EvaluationStream:
@@ -571,7 +505,7 @@ Resources:
       Role: !GetAtt SendWeeklyReportRole.Arn
       Environment:
         Variables:
-          ADMINISTRATORS: !Ref Administrators
+          ADMINISTRATORS: !Join [',', !Ref Administrators]
           EVALUATIONS_TABLE: !Ref EvaluationsTable
       EventInvokeConfig:
         MaximumRetryAttempts: 2 # 2 tentativas assincronas da funcao (ADR 0017)
@@ -581,11 +515,12 @@ Resources:
           Properties:
             ScheduleExpression: 'cron(0 8 ? * MON *)'
             ScheduleExpressionTimezone: 'America/Sao_Paulo' # Fuso de Brasilia (ADR 0008)
+            # Scheduler substitui o placeholder pelo instante agendado e o handler calcula a semana fechada anterior (ADR 0008)
+            Input: '{"time": "<aws.scheduler.scheduled-time>"}'
             RetryPolicy:
               MaximumEventAgeInSeconds: 14400 # Tentativas do agendador por ate 4 horas (ADR 0017)
               MaximumRetryAttempts: 2
             DeadLetterConfig:
-              Type: SQS
               Arn: !GetAtt WeeklyReportDlq.Arn
             RoleArn: !GetAtt SchedulerRole.Arn
 
