@@ -12,10 +12,20 @@ Parameters:
     Default: Team-2-FIAP-12ADJT
     Description: Organizacao do GitHub dona do repositorio.
 
+  GitHubOrganizationId:
+    Type: String
+    Default: '267111823'
+    Description: ID numerico imutavel da organizacao no GitHub (usado no claim sub quando use_immutable_subject=true).
+
   GitHubRepository:
     Type: String
     Default: feedback-platform
     Description: Repositorio cujo workflow da main pode assumir a role de deploy.
+
+  GitHubRepositoryId:
+    Type: String
+    Default: '1419829916'
+    Description: ID numerico imutavel do repositorio no GitHub (usado no claim sub quando use_immutable_subject=true).
 
   CreateOidcProvider:
     Type: String
@@ -51,6 +61,64 @@ Resources:
         - sts.amazonaws.com
 
   # -------------------------------------------------------------------------------------------------
+  # Teto de permissoes (permissions boundary) das roles da aplicacao (ADR 0013, ADR 0019).
+  # Impede que o deploy crie uma role feedback-platform-* com permissao larga e a execute via Lambda.
+  # -------------------------------------------------------------------------------------------------
+  FunctionPermissionsBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: feedback-platform-function-boundary
+      Description: Teto de permissoes das roles das funcoes e do agendador da feedback-platform (ADR 0013, ADR 0019).
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEvaluationsTableOperations
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:GetItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/evaluations'
+
+          - Sid: AllowEvaluationsStreamOperations
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeStream
+              - dynamodb:GetRecords
+              - dynamodb:GetShardIterator
+              - dynamodb:ListStreams
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/evaluations/stream/*'
+
+          - Sid: AllowSesSendEmail
+            Effect: Allow
+            Action:
+              - ses:SendEmail
+            Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
+
+          - Sid: AllowSqsSendMessageToPlatformQueues
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:feedback-platform-*'
+
+          - Sid: AllowCloudWatchLogsForPlatformFunctions
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/feedback-platform-*'
+
+          - Sid: AllowInvokePlatformFunctions
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:feedback-platform-*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:feedback-platform-*:*'
+
+  # -------------------------------------------------------------------------------------------------
   # Role assumida pelo workflow deploy (ADR 0013).
   # So o workflow da main deste repositorio recebe credencial: PR, outra branch e fork ficam de fora.
   # -------------------------------------------------------------------------------------------------
@@ -73,7 +141,9 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrganization}/${GitHubRepository}:ref:refs/heads/main'
+                # O repositorio usa subject imutavel no OIDC do GitHub Actions (prefixo lido em
+                # gh api repos/<org>/<repo>/actions/oidc/customization/sub -> sub_claim_prefix).
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrganization}@${GitHubOrganizationId}/${GitHubRepository}@${GitHubRepositoryId}:ref:refs/heads/main'
       ManagedPolicyArns:
         # Tudo menos IAM e Organizations; a regiao e restringida pela politica abaixo (ADR 0013).
         - arn:aws:iam::aws:policy/PowerUserAccess
@@ -94,18 +164,28 @@ Resources:
                     aws:RequestedRegion: sa-east-1
 
               # IAM so nas roles das funcoes, criadas pelo template com prefixo feedback-platform- (ADR 0019).
-              # As roles do template usam so politicas inline, entao anexar politica gerenciada nao e liberado.
-              - Sid: ManageFunctionRoles
+              # Criar role e alterar politica inline exigem o permissions boundary para impedir escalada de
+              # privilegio criando uma role com permissao larga, passando-a a uma Lambda e invocando-a; anexar
+              # politica gerenciada e alterar o boundary de uma role existente nao sao liberados.
+              - Sid: CreateAndWriteFunctionRolesWithBoundary
                 Effect: Allow
                 Action:
                   - iam:CreateRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-*'
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref FunctionPermissionsBoundary
+
+              - Sid: ManageFunctionRoles
+                Effect: Allow
+                Action:
                   - iam:DeleteRole
                   - iam:GetRole
                   - iam:UpdateRole
                   - iam:UpdateRoleDescription
                   - iam:UpdateAssumeRolePolicy
-                  - iam:PutRolePolicy
-                  - iam:DeleteRolePolicy
                   - iam:GetRolePolicy
                   - iam:ListRolePolicies
                   - iam:ListAttachedRolePolicies
@@ -125,13 +205,14 @@ Resources:
                       - lambda.amazonaws.com
                       - scheduler.amazonaws.com
 
-              # O prefixo feedback-platform-* inclui esta role e a de logs; o deploy nao pode alterar nenhuma delas.
+              # O prefixo feedback-platform-* inclui esta role, a de logs e o boundary; o deploy nao pode alterar nenhum deles.
               - Sid: DenyChangingBootstrapRoles
                 Effect: Deny
                 Action: iam:*
                 Resource:
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-deploy'
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-apigateway-logs'
+                  - !Ref FunctionPermissionsBoundary
 
               # O pipeline nao assume as roles que cria: sem isso, uma role com permissao inline larga viraria
               # um atalho para sair dos limites acima.
@@ -170,3 +251,7 @@ Outputs:
   DeployRoleArn:
     Description: Valor da variable AWS_DEPLOY_ROLE_ARN no GitHub (ADR 0013).
     Value: !GetAtt DeployRole.Arn
+
+  FunctionPermissionsBoundaryArn:
+    Description: ARN do permissions boundary obrigatorio nas roles das funcoes e do agendador da feedback-platform (ADR 0013, ADR 0019).
+    Value: !Ref FunctionPermissionsBoundary
