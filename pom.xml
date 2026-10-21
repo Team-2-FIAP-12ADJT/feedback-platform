@@ -14,6 +14,7 @@
         <module>receive-evaluation</module>
         <module>email-support</module>
         <module>send-weekly-report</module>
+        <module>send-urgency-notice</module>
     </modules>
 
     <properties>
