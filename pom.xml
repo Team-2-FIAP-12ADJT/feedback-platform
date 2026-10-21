@@ -13,6 +13,7 @@
         <module>domain</module>
         <module>receive-evaluation</module>
         <module>email-support</module>
+        <module>send-urgency-notice</module>
     </modules>
 
     <properties>
