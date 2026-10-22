@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  feedback-platform - pilha de bootstrap da conta, aplicada uma vez por um administrador com MFA, fora do
+  template da aplicacao (ADR 0012). Cria a confianca OIDC do GitHub Actions, a role feedback-platform-deploy
+  usada pelo pipeline (ADR 0013) e a role de logs do API Gateway exigida pelos logs da REST API (ADR 0015).
+  Deve ser aplicada em sa-east-1 (ADR 0011).
+
+Parameters:
+  GitHubOrganization:
+    Type: String
+    Default: Team-2-FIAP-12ADJT
+    Description: Organizacao do GitHub dona do repositorio.
+
+  GitHubOrganizationId:
+    Type: String
+    Default: '267111823'
+    Description: ID numerico imutavel da organizacao no GitHub (usado no claim sub quando use_immutable_subject=true).
+
+  GitHubRepository:
+    Type: String
+    Default: feedback-platform
+    Description: Repositorio cujo workflow da main pode assumir a role de deploy.
+
+  GitHubRepositoryId:
+    Type: String
+    Default: '1419829916'
+    Description: ID numerico imutavel do repositorio no GitHub (usado no claim sub quando use_immutable_subject=true).
+
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >
+      'false' quando a conta ja tem o provedor token.actions.githubusercontent.com. A conta aceita um so
+      provedor por URL; nesse caso a role passa a confiar no provedor existente.
+
+  ConfigureApiGatewayLogging:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >
+      'false' quando o API Gateway desta regiao ja tem uma role de logs configurada na conta e ela deve ser
+      mantida.
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+  ShouldConfigureApiGatewayLogging: !Equals [!Ref ConfigureApiGatewayLogging, 'true']
+
+Resources:
+
+  # -------------------------------------------------------------------------------------------------
+  # Confianca OIDC do GitHub Actions: o pipeline entra na conta sem chave guardada no GitHub (ADR 0013).
+  # -------------------------------------------------------------------------------------------------
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  # -------------------------------------------------------------------------------------------------
+  # Teto de permissoes (permissions boundary) das roles da aplicacao (ADR 0013, ADR 0019).
+  # Impede que o deploy crie uma role feedback-platform-* com permissao larga e a execute via Lambda.
+  # -------------------------------------------------------------------------------------------------
+  FunctionPermissionsBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: feedback-platform-function-boundary
+      Description: Teto de permissoes das roles das funcoes e do agendador da feedback-platform (ADR 0013, ADR 0019).
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEvaluationsTableOperations
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:GetItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/evaluations'
+
+          - Sid: AllowEvaluationsStreamOperations
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeStream
+              - dynamodb:GetRecords
+              - dynamodb:GetShardIterator
+              - dynamodb:ListStreams
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/evaluations/stream/*'
+
+          - Sid: AllowSesSendEmail
+            Effect: Allow
+            Action:
+              - ses:SendEmail
+            Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
+
+          - Sid: AllowSqsSendMessageToPlatformQueues
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:feedback-platform-*'
+
+          - Sid: AllowCloudWatchLogsForPlatformFunctions
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/feedback-platform-*'
+
+          - Sid: AllowInvokePlatformFunctions
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:feedback-platform-*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:feedback-platform-*:*'
+
+  # -------------------------------------------------------------------------------------------------
+  # Role assumida pelo workflow deploy (ADR 0013).
+  # So o workflow da main deste repositorio recebe credencial: PR, outra branch e fork ficam de fora.
+  # -------------------------------------------------------------------------------------------------
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: feedback-platform-deploy
+      Description: Deploy da feedback-platform pelo GitHub Actions (ADR 0013).
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # O repositorio usa subject imutavel no OIDC do GitHub Actions (prefixo lido em
+                # gh api repos/<org>/<repo>/actions/oidc/customization/sub -> sub_claim_prefix).
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrganization}@${GitHubOrganizationId}/${GitHubRepository}@${GitHubRepositoryId}:ref:refs/heads/main'
+      ManagedPolicyArns:
+        # Tudo menos IAM e Organizations; a regiao e restringida pela politica abaixo (ADR 0013).
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Policies:
+        - PolicyName: feedback-platform-deploy-limits
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Fora de sa-east-1 nada funciona, exceto os servicos globais que o deploy usa (ADR 0011).
+              - Sid: DenyOutsideSaoPaulo
+                Effect: Deny
+                NotAction:
+                  - iam:*
+                  - sts:*
+                Resource: '*'
+                Condition:
+                  StringNotEquals:
+                    aws:RequestedRegion: sa-east-1
+
+              # IAM so nas roles das funcoes, criadas pelo template com prefixo feedback-platform- (ADR 0019).
+              # Criar role e alterar politica inline exigem o permissions boundary para impedir escalada de
+              # privilegio criando uma role com permissao larga, passando-a a uma Lambda e invocando-a; anexar
+              # politica gerenciada e alterar o boundary de uma role existente nao sao liberados.
+              - Sid: CreateAndWriteFunctionRolesWithBoundary
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-*'
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref FunctionPermissionsBoundary
+
+              - Sid: ManageFunctionRoles
+                Effect: Allow
+                Action:
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-*'
+
+              # Uma role so pode ser entregue a Lambda e ao EventBridge Scheduler, os servicos que o template usa.
+              - Sid: PassFunctionRolesToServices
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-*'
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - lambda.amazonaws.com
+                      - scheduler.amazonaws.com
+
+              # O prefixo feedback-platform-* inclui esta role, a de logs e o boundary; o deploy nao pode alterar nenhum deles.
+              - Sid: DenyChangingBootstrapRoles
+                Effect: Deny
+                Action: iam:*
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-deploy'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-apigateway-logs'
+                  - !Ref FunctionPermissionsBoundary
+
+              # O pipeline nao assume as roles que cria: sem isso, uma role com permissao inline larga viraria
+              # um atalho para sair dos limites acima.
+              - Sid: DenyAssumingPlatformRoles
+                Effect: Deny
+                Action: sts:AssumeRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/feedback-platform-*'
+
+  # -------------------------------------------------------------------------------------------------
+  # Logs da REST API: o estagio usa log de acesso e de execucao (ADR 0015), e o API Gateway so os grava
+  # quando a conta tem uma role de logs configurada na regiao. E configuracao da conta, nao da aplicacao.
+  # -------------------------------------------------------------------------------------------------
+  ApiGatewayLogsRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldConfigureApiGatewayLogging
+    Properties:
+      RoleName: feedback-platform-apigateway-logs
+      Description: Permite ao API Gateway gravar logs no CloudWatch (ADR 0015).
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Condition: ShouldConfigureApiGatewayLogging
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayLogsRole.Arn
+
+Outputs:
+  DeployRoleArn:
+    Description: Valor da variable AWS_DEPLOY_ROLE_ARN no GitHub (ADR 0013).
+    Value: !GetAtt DeployRole.Arn
+
+  FunctionPermissionsBoundaryArn:
+    Description: ARN do permissions boundary obrigatorio nas roles das funcoes e do agendador da feedback-platform (ADR 0013, ADR 0019).
+    Value: !Ref FunctionPermissionsBoundary
