@@ -31,9 +31,10 @@ Do mesmo parâmetro, o template ([ADR 0012](0012-iac-com-aws-sam.md)) gera:
 
 Uma lista, três usos: **não há listas a manter iguais à mão.** Mudar a lista é editar a variável e rodar o deploy.
 
-**A confirmar na implementação:** gerar um recurso por endereço usa `Fn::ForEach`, da transformação
-`AWS::LanguageExtensions` do CloudFormation. Se o SAM não a aceitar junto com a transformação dele, o plano B são
-parâmetros fixos (`Admin1` a `Admin5`).
+**Confirmado na implementação (T-06):** gerar um recurso por endereço usa `Fn::ForEach`, da transformação
+`AWS::LanguageExtensions` do CloudFormation. O SAM a aceita a partir do SAM CLI 1.161.0 com `--language-extensions` em
+cada comando (ou `SAM_CLI_ENABLE_LANGUAGE_EXTENSIONS=1`), o que exige Python 3.10+ no pipeline; sem a flag, o
+`sam deploy` quebra antes de chegar à AWS. O plano B (`Admin1` a `Admin5`) ficou dispensado.
 
 ## Alternativas consideradas
 
@@ -49,3 +50,8 @@ parâmetros fixos (`Admin1` a `Admin5`).
   Sem os dois cliques, ela não recebe os avisos ou não recebe os alertas; o roteiro de deploy registra isso.
 - Sair da lista remove a assinatura e a identidade no próximo deploy.
 - Nenhuma permissão nova nas roles das funções ([ADR 0019](0019-uma-role-por-funcao.md)).
+- O pipeline do deploy ([ADR 0013](0013-pipeline-deploy-automatico-oidc.md)) fixa SAM CLI >= 1.161.0 e liga a flag
+  `--language-extensions` (ou `SAM_CLI_ENABLE_LANGUAGE_EXTENSIONS=1`).
+- **Limitação declarada:** o ID lógico de cada recurso vem do endereço sem a pontuação, então dois endereços que só
+  diferem por pontuação (`ana.lima@…` e `analima@…`) geram o mesmo ID e o deploy falha — improvável num grupo de cinco;
+  se acontecer, trocar um dos endereços.
