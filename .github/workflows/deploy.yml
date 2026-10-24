@@ -1,0 +1,190 @@
+# Deploy na AWS a cada push na main com o ci verde, ou manual para redeploy de um commit da main (ADR 0013).
+# Termina com o teste de fumaca, que grava uma Evaluation, confere o SnapStart e apaga a Evaluation (ADR 0011, ADR 0024).
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: SHA ou ref de um commit da main para redeploy
+        required: true
+        default: main
+
+permissions:
+  id-token: write
+  contents: read
+
+# Um deploy por vez; o segundo espera o anterior terminar.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: sa-east-1
+  STACK_NAME: feedback-platform
+  # O template usa Fn::ForEach da transformacao AWS::LanguageExtensions (ADR 0020).
+  SAM_CLI_ENABLE_LANGUAGE_EXTENSIONS: '1'
+  SAM_CLI_TELEMETRY: '0'
+
+jobs:
+  deploy:
+    name: deploy
+    # A role so confia na main (ADR 0013): sem "environment:", que mudaria o sub do token.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Conferir variables do repositorio
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          ADMINISTRATORS: ${{ vars.ADMINISTRATORS }}
+        run: |
+          missing=0
+          [ -n "$AWS_DEPLOY_ROLE_ARN" ] || { echo "::error::Variable AWS_DEPLOY_ROLE_ARN ausente"; missing=1; }
+          [ -n "$ADMINISTRATORS" ] || { echo "::error::Variable ADMINISTRATORS ausente"; missing=1; }
+          exit "$missing"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      # O redeploy manual so aceita commit que ja passou pela main.
+      - name: Resolver commit alvo
+        id: target
+        run: |
+          sha=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::$sha nao esta na main"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # Os testes ja rodaram no ci deste commit.
+      - name: mvn package
+        run: mvn -B -ntp package -DskipTests
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      # O template exige SAM CLI 1.161.0 ou mais novo para Fn::ForEach (ADR 0020).
+      - name: Conferir versao do SAM CLI
+        run: |
+          v=$(sam --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          printf '%s\n' 1.161.0 "$v" | sort -V -C || { echo "::error::SAM CLI $v, minimo 1.161.0"; exit 1; }
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: sam deploy
+        env:
+          ADMINISTRATORS: ${{ vars.ADMINISTRATORS }}
+        run: |
+          admins=$(echo "$ADMINISTRATORS" | tr -d '[:space:]')
+          sam deploy \
+            --template-file template.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "Administrators=$admins"
+
+      - name: Ler saidas da pilha
+        id: stack
+        run: |
+          output() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          echo "api=$(output ApiEndpoint)" >> "$GITHUB_OUTPUT"
+          echo "table=$(output EvaluationsTableName)" >> "$GITHUB_OUTPUT"
+
+      # Nota 9 da Urgency LOW: grava sem disparar Urgency Notice (ADR 0024).
+      - name: Fumaca - POST /avaliacao
+        id: post
+        env:
+          API: ${{ steps.stack.outputs.api }}
+          COMMIT: ${{ steps.target.outputs.short }}
+        run: |
+          body=$(jq -nc --arg d "Teste de fumaça do deploy $COMMIT" '{descricao: $d, nota: 9}')
+          for attempt in 1 2 3 4 5; do
+            status=$(curl -sS -o response.json -w '%{http_code}' -X POST "$API" \
+              -H 'Content-Type: application/json' --data "$body" || echo 000)
+            # 5xx e falha de rede logo apos o deploy podem ser passageiros.
+            case "$status" in 5*|000) echo "Tentativa $attempt: HTTP $status"; sleep 10 ;; *) break ;; esac
+          done
+          if [ "$status" != 201 ]; then
+            echo "::error::POST /avaliacao respondeu $status, esperado 201"
+            cat response.json
+            exit 1
+          fi
+          echo "id=$(jq -r .id response.json)" >> "$GITHUB_OUTPUT"
+          echo "dataEnvio=$(jq -r .dataEnvio response.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Fumaca - SnapStart nas versoes publicadas
+        run: |
+          failed=0
+          for fn in receive-evaluation send-urgency-notice send-weekly-report; do
+            state=$(aws lambda get-function-configuration --function-name "feedback-platform-$fn" --qualifier live \
+              --query '[Version, SnapStart.ApplyOn, SnapStart.OptimizationStatus]' --output text)
+            echo "$fn: $state"
+            read -r version apply status <<< "$state"
+            if [ "$version" = "\$LATEST" ] || [ "$apply" != PublishedVersions ] || [ "$status" != On ]; then
+              echo "::error::$fn sem SnapStart ativo na versao publicada"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      # Roda mesmo se a conferencia do SnapStart falhar, para nao deixar Evaluation de teste na tabela (ADR 0024).
+      - name: Fumaca - remover a Evaluation de teste
+        if: ${{ !cancelled() && steps.post.outputs.id != '' }}
+        env:
+          TABLE: ${{ steps.stack.outputs.table }}
+          ID: ${{ steps.post.outputs.id }}
+          DATA_ENVIO: ${{ steps.post.outputs.dataEnvio }}
+        run: |
+          day=$(TZ=America/Sao_Paulo date -d "$DATA_ENVIO" +%F)
+          keys=$(aws dynamodb query --table-name "$TABLE" --consistent-read \
+            --key-condition-expression 'submissionDay = :day' \
+            --filter-expression '#id = :id' \
+            --projection-expression 'submissionDay, submissionKey' \
+            --expression-attribute-names '{"#id": "id"}' \
+            --expression-attribute-values "$(jq -nc --arg d "$day" --arg i "$ID" '{":day": {S: $d}, ":id": {S: $i}}')" \
+            --query 'Items' --output json)
+          count=$(echo "$keys" | jq length)
+          if [ "$count" != 1 ]; then
+            echo "::error::Evaluation $ID encontrada $count vez(es) na particao $day"
+            exit 1
+          fi
+          key=$(echo "$keys" | jq -c '.[0]')
+          aws dynamodb delete-item --table-name "$TABLE" --key "$key" \
+            --condition-expression 'attribute_exists(submissionKey)'
+          left=$(aws dynamodb get-item --table-name "$TABLE" --key "$key" --consistent-read \
+            --query 'Item.id.S' --output text)
+          if [ "$left" != None ]; then
+            echo "::error::Evaluation $ID continua na tabela"
+            exit 1
+          fi
+          echo "Evaluation $ID removida da particao $day"
