@@ -53,7 +53,7 @@ jobs:
           [ -n "$ADMINISTRATORS" ] || { echo "::error::Variable ADMINISTRATORS ausente"; missing=1; }
           exit "$missing"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.workflow_run.head_sha }}
           fetch-depth: 0
@@ -70,7 +70,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -89,7 +89,7 @@ jobs:
           v=$(sam --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           printf '%s\n' 1.161.0 "$v" | sort -V -C || { echo "::error::SAM CLI $v, minimo 1.161.0"; exit 1; }
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: deploy-${{ github.run_id }}
