@@ -2,6 +2,7 @@
 
 - **Status:** aceita
 - **Data:** 2026-10-18
+- **Substituída em parte por:** [ADR 0025](0025-teste-de-fumaca-remove-por-descricao.md) — o item sobre achar o item pelo `id`
 
 ## Contexto
 

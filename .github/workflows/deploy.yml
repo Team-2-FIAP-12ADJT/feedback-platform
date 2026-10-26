@@ -1,5 +1,5 @@
 # Deploy na AWS a cada push na main com o ci verde, ou manual para redeploy de um commit da main (ADR 0013).
-# Termina com o teste de fumaca, que grava uma Evaluation, confere o SnapStart e apaga a Evaluation (ADR 0011, ADR 0024).
+# Termina com o teste de fumaca, que grava uma Evaluation, confere o SnapStart e apaga a Evaluation (ADR 0011, ADR 0024, ADR 0025).
 name: deploy
 
 on:
@@ -128,9 +128,12 @@ jobs:
           COMMIT: ${{ steps.target.outputs.short }}
         run: |
           body=$(jq -nc --arg d "Teste de fumaça do deploy $COMMIT" '{descricao: $d, nota: 9}')
+          # Dia da primeira tentativa: a remocao procura nele as gravacoes de tentativas anteriores a meia-noite (ADR 0025).
+          echo "startDay=$(TZ=America/Sao_Paulo date +%F)" >> "$GITHUB_OUTPUT"
           for attempt in 1 2 3 4 5; do
-            status=$(curl -sS -o response.json -w '%{http_code}' -X POST "$API" \
-              -H 'Content-Type: application/json' --data "$body" || echo 000)
+            status=$(curl -sS --max-time 30 -o response.json -w '%{http_code}' -X POST "$API" \
+              -H 'Content-Type: application/json' --data "$body") || true
+            status=${status:-000}
             # 5xx e falha de rede logo apos o deploy podem ser passageiros.
             case "$status" in 5*|000) echo "Tentativa $attempt: HTTP $status"; sleep 10 ;; *) break ;; esac
           done
@@ -139,8 +142,10 @@ jobs:
             cat response.json
             exit 1
           fi
-          echo "id=$(jq -r .id response.json)" >> "$GITHUB_OUTPUT"
-          echo "dataEnvio=$(jq -r .dataEnvio response.json)" >> "$GITHUB_OUTPUT"
+          id=$(jq -er .id response.json)
+          data_envio=$(jq -er .dataEnvio response.json)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "dataEnvio=$data_envio" >> "$GITHUB_OUTPUT"
 
       - name: Fumaca - SnapStart nas versoes publicadas
         run: |
@@ -157,34 +162,73 @@ jobs:
           done
           exit "$failed"
 
-      # Roda mesmo se a conferencia do SnapStart falhar, para nao deixar Evaluation de teste na tabela (ADR 0024).
+      # Roda se o POST rodou, para nao deixar Evaluation de teste na tabela (ADR 0024, ADR 0025).
       - name: Fumaca - remover a Evaluation de teste
-        if: ${{ !cancelled() && steps.post.outputs.id != '' }}
+        if: ${{ !cancelled() && steps.post.outcome != 'skipped' }}
         env:
           TABLE: ${{ steps.stack.outputs.table }}
+          DESCRIPTION: "Teste de fumaça do deploy ${{ steps.target.outputs.short }}"
           ID: ${{ steps.post.outputs.id }}
           DATA_ENVIO: ${{ steps.post.outputs.dataEnvio }}
+          START_DAY: ${{ steps.post.outputs.startDay }}
         run: |
-          day=$(TZ=America/Sao_Paulo date -d "$DATA_ENVIO" +%F)
-          keys=$(aws dynamodb query --table-name "$TABLE" --consistent-read \
-            --key-condition-expression 'submissionDay = :day' \
-            --filter-expression '#id = :id' \
-            --projection-expression 'submissionDay, submissionKey' \
-            --expression-attribute-names '{"#id": "id"}' \
-            --expression-attribute-values "$(jq -nc --arg d "$day" --arg i "$ID" '{":day": {S: $d}, ":id": {S: $i}}')" \
-            --query 'Items' --output json)
-          count=$(echo "$keys" | jq length)
-          if [ "$count" != 1 ]; then
-            echo "::error::Evaluation $ID encontrada $count vez(es) na particao $day"
-            exit 1
+          days=()
+          if [ -n "$DATA_ENVIO" ]; then
+            days+=("$(TZ=America/Sao_Paulo date -d "$DATA_ENVIO" +%F)")
           fi
-          key=$(echo "$keys" | jq -c '.[0]')
-          aws dynamodb delete-item --table-name "$TABLE" --key "$key" \
-            --condition-expression 'attribute_exists(submissionKey)'
-          left=$(aws dynamodb get-item --table-name "$TABLE" --key "$key" --consistent-read \
-            --query 'Item.id.S' --output text)
-          if [ "$left" != None ]; then
-            echo "::error::Evaluation $ID continua na tabela"
-            exit 1
+          [ -z "$START_DAY" ] || days+=("$START_DAY")
+          days+=("$(TZ=America/Sao_Paulo date +%F)")
+
+          search_days=()
+          while IFS= read -r day; do
+            [ -n "$day" ] && search_days+=("$day")
+          done < <(printf '%s\n' "${days[@]}" | sort -u)
+
+          items='[]'
+          for day in "${search_days[@]}"; do
+            values=$(jq -nc --arg day "$day" --arg desc "$DESCRIPTION" '{":day": {S: $day}, ":d": {S: $desc}}')
+            day_items=$(aws dynamodb query --table-name "$TABLE" --consistent-read \
+              --key-condition-expression 'submissionDay = :day' \
+              --filter-expression '#desc = :d' \
+              --projection-expression 'submissionDay, submissionKey, id' \
+              --expression-attribute-names '{"#desc": "description"}' \
+              --expression-attribute-values "$values" \
+              --query 'Items' --output json)
+            items=$(jq -nc --argjson all "$items" --argjson current "$day_items" '$all + $current')
+          done
+
+          total=$(echo "$items" | jq length)
+
+          if [ -n "$ID" ]; then
+            if ! echo "$items" | jq -e --arg id "$ID" 'any(.[]; .id.S == $id)' > /dev/null; then
+              echo "::error::Evaluation $ID nao encontrada na tabela para a descricao '$DESCRIPTION'"
+              exit 1
+            fi
+          elif [ "$total" -eq 0 ]; then
+            echo "Nenhuma Evaluation gravada pelo POST com falha"
+            exit 0
           fi
-          echo "Evaluation $ID removida da particao $day"
+
+          while IFS= read -r item; do
+            [ -n "$item" ] || continue
+            item_id=$(echo "$item" | jq -r '.id.S')
+            key=$(echo "$item" | jq -c '{submissionDay, submissionKey}')
+            aws dynamodb delete-item --table-name "$TABLE" --key "$key" \
+              --condition-expression 'attribute_exists(submissionKey)'
+            left=$(aws dynamodb get-item --table-name "$TABLE" --key "$key" --consistent-read \
+              --query 'Item.id.S' --output text)
+            if [ "$left" != "None" ]; then
+              echo "::error::Evaluation $item_id continua na tabela"
+              exit 1
+            fi
+            echo "Evaluation $item_id removida"
+          done < <(echo "$items" | jq -c '.[]')
+
+          if [ -n "$ID" ]; then
+            orphans=$((total - 1))
+          else
+            orphans=$total
+          fi
+          if [ "$orphans" -gt 0 ]; then
+            echo "$orphans Evaluation(s) orfa(s) removida(s)"
+          fi
