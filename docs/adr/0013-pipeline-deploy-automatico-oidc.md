@@ -2,6 +2,7 @@
 
 - **Status:** aceita
 - **Complementada por:** [ADR 0024](0024-teste-de-fumaca-apaga-a-propria-evaluation.md) — a Evaluation do teste de fumaça
+- **Substituída em parte por:** [ADR 0026](0026-redeploy-manual-de-commit-da-main.md) — as linhas da tabela "Dois workflows" sobre quando o `ci` e o `deploy` rodam
 - **Data:** 2026-10-17
 
 ## Contexto

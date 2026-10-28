@@ -5,7 +5,7 @@ Tech Challenge da **Fase 4** da pós-graduação FIAP ADJT — Cloud Computing, 
 Plataforma de feedback de aulas: estudantes avaliam as aulas, administradores recebem aviso imediato dos
 itens críticos e um relatório semanal com a média das avaliações.
 
-> **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0025, todas `aceita`). **Nada
+> **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0026, todas `aceita`). **Nada
 > implementado.** Não há decisão em aberto: o que falta é implementar.
 >
 > **Prazo de entrega: 17/11/2026.**
@@ -60,6 +60,7 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
 | [0023](docs/adr/0023-remetente-e-o-primeiro-administrator.md) | O remetente do SES é o primeiro endereço da lista de Administrators; o e-mail chega sem autenticação, e cada Administrator o tira do spam por regra | aceita |
 | [0024](docs/adr/0024-teste-de-fumaca-apaga-a-propria-evaluation.md) | O teste de fumaça do deploy apaga a própria Evaluation, para ela não entrar no Weekly Report; falha se não conseguir | aceita |
 | [0025](docs/adr/0025-teste-de-fumaca-remove-por-descricao.md) | O teste de fumaça remove por Description nas partições da execução, limpando também órfãs de retentativas | aceita |
+| [0026](docs/adr/0026-redeploy-manual-de-commit-da-main.md) | O `deploy` aceita redeploy manual de um commit da `main`, para rollback; o `ci` roda em toda PR e só no push da `main` | aceita |
 
 Contrato da rota: [`docs/contracts/receive-evaluation.md`](docs/contracts/receive-evaluation.md).
 

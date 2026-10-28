@@ -1,4 +1,4 @@
-# Deploy na AWS a cada push na main com o ci verde, ou manual para redeploy de um commit da main (ADR 0013).
+# Deploy na AWS a cada push na main com o ci verde, ou manual para redeploy de um commit da main (ADR 0013, ADR 0026).
 # Termina com o teste de fumaca, que grava uma Evaluation, confere o SnapStart e apaga a Evaluation (ADR 0011, ADR 0024, ADR 0025).
 name: deploy
 
@@ -117,8 +117,11 @@ jobs:
             aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
               --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
           }
-          echo "api=$(output ApiEndpoint)" >> "$GITHUB_OUTPUT"
-          echo "table=$(output EvaluationsTableName)" >> "$GITHUB_OUTPUT"
+          api=$(output ApiEndpoint)
+          table=$(output EvaluationsTableName)
+          [ -n "$api" ] && [ "$api" != None ] && [ -n "$table" ] && [ "$table" != None ] || { echo "::error::Saidas da pilha ausentes"; exit 1; }
+          echo "api=$api" >> "$GITHUB_OUTPUT"
+          echo "table=$table" >> "$GITHUB_OUTPUT"
 
       # Nota 9 da Urgency LOW: grava sem disparar Urgency Notice (ADR 0024).
       - name: Fumaca - POST /avaliacao
@@ -135,7 +138,7 @@ jobs:
               -H 'Content-Type: application/json' --data "$body") || true
             status=${status:-000}
             # 5xx e falha de rede logo apos o deploy podem ser passageiros.
-            case "$status" in 5*|000) echo "Tentativa $attempt: HTTP $status"; sleep 10 ;; *) break ;; esac
+            case "$status" in 5*|000) echo "retried=1" >> "$GITHUB_OUTPUT"; echo "Tentativa $attempt: HTTP $status"; sleep 10 ;; *) break ;; esac
           done
           if [ "$status" != 201 ]; then
             echo "::error::POST /avaliacao respondeu $status, esperado 201"
@@ -171,7 +174,10 @@ jobs:
           ID: ${{ steps.post.outputs.id }}
           DATA_ENVIO: ${{ steps.post.outputs.dataEnvio }}
           START_DAY: ${{ steps.post.outputs.startDay }}
+          RETRIED: ${{ steps.post.outputs.retried }}
         run: |
+          # Aguarda o Timeout da funcao (Globals no template.yaml): um POST com falha pode ainda estar gravando.
+          [ -z "$RETRIED" ] || sleep 30
           days=()
           if [ -n "$DATA_ENVIO" ]; then
             days+=("$(TZ=America/Sao_Paulo date -d "$DATA_ENVIO" +%F)")
@@ -209,26 +215,26 @@ jobs:
             exit 0
           fi
 
+          falhou=0
+          orphans=0
           while IFS= read -r item; do
             [ -n "$item" ] || continue
             item_id=$(echo "$item" | jq -r '.id.S')
             key=$(echo "$item" | jq -c '{submissionDay, submissionKey}')
             aws dynamodb delete-item --table-name "$TABLE" --key "$key" \
-              --condition-expression 'attribute_exists(submissionKey)'
+              --condition-expression 'attribute_exists(submissionKey)' || { echo "::error::Falha ao remover Evaluation $item_id"; falhou=1; continue; }
             left=$(aws dynamodb get-item --table-name "$TABLE" --key "$key" --consistent-read \
-              --query 'Item.id.S' --output text)
+              --query 'Item.id.S' --output text) || { echo "::error::Falha ao conferir remocao da Evaluation $item_id"; falhou=1; continue; }
             if [ "$left" != "None" ]; then
               echo "::error::Evaluation $item_id continua na tabela"
-              exit 1
+              falhou=1
+              continue
             fi
             echo "Evaluation $item_id removida"
+            [ "$item_id" = "$ID" ] || orphans=$((orphans + 1))
           done < <(echo "$items" | jq -c '.[]')
 
-          if [ -n "$ID" ]; then
-            orphans=$((total - 1))
-          else
-            orphans=$total
-          fi
           if [ "$orphans" -gt 0 ]; then
             echo "$orphans Evaluation(s) orfa(s) removida(s)"
           fi
+          exit "$falhou"
