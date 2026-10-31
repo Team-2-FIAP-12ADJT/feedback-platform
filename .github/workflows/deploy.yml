@@ -1,0 +1,240 @@
+# Deploy na AWS a cada push na main com o ci verde, ou manual para redeploy de um commit da main (ADR 0013, ADR 0026).
+# Termina com o teste de fumaca, que grava uma Evaluation, confere o SnapStart e apaga a Evaluation (ADR 0011, ADR 0024, ADR 0025).
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: SHA ou ref de um commit da main para redeploy
+        required: true
+        default: main
+
+permissions:
+  id-token: write
+  contents: read
+
+# Um deploy por vez; o segundo espera o anterior terminar.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: sa-east-1
+  STACK_NAME: feedback-platform
+  # O template usa Fn::ForEach da transformacao AWS::LanguageExtensions (ADR 0020).
+  SAM_CLI_ENABLE_LANGUAGE_EXTENSIONS: '1'
+  SAM_CLI_TELEMETRY: '0'
+
+jobs:
+  deploy:
+    name: deploy
+    # A role so confia na main (ADR 0013): sem "environment:", que mudaria o sub do token.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Conferir variables do repositorio
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          ADMINISTRATORS: ${{ vars.ADMINISTRATORS }}
+        run: |
+          missing=0
+          [ -n "$AWS_DEPLOY_ROLE_ARN" ] || { echo "::error::Variable AWS_DEPLOY_ROLE_ARN ausente"; missing=1; }
+          [ -n "$ADMINISTRATORS" ] || { echo "::error::Variable ADMINISTRATORS ausente"; missing=1; }
+          exit "$missing"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      # O redeploy manual so aceita commit que ja passou pela main.
+      - name: Resolver commit alvo
+        id: target
+        run: |
+          sha=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::$sha nao esta na main"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # Os testes ja rodaram no ci deste commit.
+      - name: mvn package
+        run: mvn -B -ntp package -DskipTests
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      # O template exige SAM CLI 1.161.0 ou mais novo para Fn::ForEach (ADR 0020).
+      - name: Conferir versao do SAM CLI
+        run: |
+          v=$(sam --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          printf '%s\n' 1.161.0 "$v" | sort -V -C || { echo "::error::SAM CLI $v, minimo 1.161.0"; exit 1; }
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: sam deploy
+        env:
+          ADMINISTRATORS: ${{ vars.ADMINISTRATORS }}
+        run: |
+          admins=$(echo "$ADMINISTRATORS" | tr -d '[:space:]')
+          sam deploy \
+            --template-file template.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "Administrators=$admins"
+
+      - name: Ler saidas da pilha
+        id: stack
+        run: |
+          output() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          api=$(output ApiEndpoint)
+          table=$(output EvaluationsTableName)
+          [ -n "$api" ] && [ "$api" != None ] && [ -n "$table" ] && [ "$table" != None ] || { echo "::error::Saidas da pilha ausentes"; exit 1; }
+          echo "api=$api" >> "$GITHUB_OUTPUT"
+          echo "table=$table" >> "$GITHUB_OUTPUT"
+
+      # Nota 9 da Urgency LOW: grava sem disparar Urgency Notice (ADR 0024).
+      - name: Fumaca - POST /avaliacao
+        id: post
+        env:
+          API: ${{ steps.stack.outputs.api }}
+          COMMIT: ${{ steps.target.outputs.short }}
+        run: |
+          body=$(jq -nc --arg d "Teste de fumaça do deploy $COMMIT" '{descricao: $d, nota: 9}')
+          # Dia da primeira tentativa: a remocao procura nele as gravacoes de tentativas anteriores a meia-noite (ADR 0025).
+          echo "startDay=$(TZ=America/Sao_Paulo date +%F)" >> "$GITHUB_OUTPUT"
+          for attempt in 1 2 3 4 5; do
+            status=$(curl -sS --max-time 30 -o response.json -w '%{http_code}' -X POST "$API" \
+              -H 'Content-Type: application/json' --data "$body") || true
+            status=${status:-000}
+            # 5xx e falha de rede logo apos o deploy podem ser passageiros.
+            case "$status" in 5*|000) echo "retried=1" >> "$GITHUB_OUTPUT"; echo "Tentativa $attempt: HTTP $status"; sleep 10 ;; *) break ;; esac
+          done
+          if [ "$status" != 201 ]; then
+            echo "::error::POST /avaliacao respondeu $status, esperado 201"
+            cat response.json
+            exit 1
+          fi
+          id=$(jq -er .id response.json)
+          data_envio=$(jq -er .dataEnvio response.json)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "dataEnvio=$data_envio" >> "$GITHUB_OUTPUT"
+
+      - name: Fumaca - SnapStart nas versoes publicadas
+        run: |
+          failed=0
+          for fn in receive-evaluation send-urgency-notice send-weekly-report; do
+            state=$(aws lambda get-function-configuration --function-name "feedback-platform-$fn" --qualifier live \
+              --query '[Version, SnapStart.ApplyOn, SnapStart.OptimizationStatus]' --output text)
+            echo "$fn: $state"
+            read -r version apply status <<< "$state"
+            if [ "$version" = "\$LATEST" ] || [ "$apply" != PublishedVersions ] || [ "$status" != On ]; then
+              echo "::error::$fn sem SnapStart ativo na versao publicada"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      # Roda se o POST rodou, para nao deixar Evaluation de teste na tabela (ADR 0024, ADR 0025).
+      - name: Fumaca - remover a Evaluation de teste
+        if: ${{ !cancelled() && steps.post.outcome != 'skipped' }}
+        env:
+          TABLE: ${{ steps.stack.outputs.table }}
+          DESCRIPTION: "Teste de fumaça do deploy ${{ steps.target.outputs.short }}"
+          ID: ${{ steps.post.outputs.id }}
+          DATA_ENVIO: ${{ steps.post.outputs.dataEnvio }}
+          START_DAY: ${{ steps.post.outputs.startDay }}
+          RETRIED: ${{ steps.post.outputs.retried }}
+        run: |
+          # Aguarda o Timeout da funcao (Globals no template.yaml): um POST com falha pode ainda estar gravando.
+          [ -z "$RETRIED" ] || sleep 30
+          days=()
+          if [ -n "$DATA_ENVIO" ]; then
+            days+=("$(TZ=America/Sao_Paulo date -d "$DATA_ENVIO" +%F)")
+          fi
+          [ -z "$START_DAY" ] || days+=("$START_DAY")
+          days+=("$(TZ=America/Sao_Paulo date +%F)")
+
+          search_days=()
+          while IFS= read -r day; do
+            [ -n "$day" ] && search_days+=("$day")
+          done < <(printf '%s\n' "${days[@]}" | sort -u)
+
+          items='[]'
+          for day in "${search_days[@]}"; do
+            values=$(jq -nc --arg day "$day" --arg desc "$DESCRIPTION" '{":day": {S: $day}, ":d": {S: $desc}}')
+            day_items=$(aws dynamodb query --table-name "$TABLE" --consistent-read \
+              --key-condition-expression 'submissionDay = :day' \
+              --filter-expression '#desc = :d' \
+              --projection-expression 'submissionDay, submissionKey, id' \
+              --expression-attribute-names '{"#desc": "description"}' \
+              --expression-attribute-values "$values" \
+              --query 'Items' --output json)
+            items=$(jq -nc --argjson all "$items" --argjson current "$day_items" '$all + $current')
+          done
+
+          total=$(echo "$items" | jq length)
+
+          if [ -n "$ID" ]; then
+            if ! echo "$items" | jq -e --arg id "$ID" 'any(.[]; .id.S == $id)' > /dev/null; then
+              echo "::error::Evaluation $ID nao encontrada na tabela para a descricao '$DESCRIPTION'"
+              exit 1
+            fi
+          elif [ "$total" -eq 0 ]; then
+            echo "Nenhuma Evaluation gravada pelo POST com falha"
+            exit 0
+          fi
+
+          falhou=0
+          orphans=0
+          while IFS= read -r item; do
+            [ -n "$item" ] || continue
+            item_id=$(echo "$item" | jq -r '.id.S')
+            key=$(echo "$item" | jq -c '{submissionDay, submissionKey}')
+            aws dynamodb delete-item --table-name "$TABLE" --key "$key" \
+              --condition-expression 'attribute_exists(submissionKey)' || { echo "::error::Falha ao remover Evaluation $item_id"; falhou=1; continue; }
+            left=$(aws dynamodb get-item --table-name "$TABLE" --key "$key" --consistent-read \
+              --query 'Item.id.S' --output text) || { echo "::error::Falha ao conferir remocao da Evaluation $item_id"; falhou=1; continue; }
+            if [ "$left" != "None" ]; then
+              echo "::error::Evaluation $item_id continua na tabela"
+              falhou=1
+              continue
+            fi
+            echo "Evaluation $item_id removida"
+            [ "$item_id" = "$ID" ] || orphans=$((orphans + 1))
+          done < <(echo "$items" | jq -c '.[]')
+
+          if [ "$orphans" -gt 0 ]; then
+            echo "$orphans Evaluation(s) orfa(s) removida(s)"
+          fi
+          exit "$falhou"
