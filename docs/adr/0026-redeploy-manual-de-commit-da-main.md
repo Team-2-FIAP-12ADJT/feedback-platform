@@ -2,6 +2,7 @@
 
 - **Status:** aceita
 - **Data:** 2026-10-27
+- **Substituída em parte por:** [ADR 0027](0027-redeploy-so-da-linha-principal-da-main.md) — a trava do commit alvo (ancestral da `main`)
 - **Substitui em parte:** [ADR 0013](0013-pipeline-deploy-automatico-oidc.md) (as linhas da tabela "Dois workflows" sobre quando o `ci` e o `deploy` rodam)
 
 ## Contexto

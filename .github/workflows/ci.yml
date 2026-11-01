@@ -1,5 +1,5 @@
 # Validacao de toda PR e todo push na main: build e testes com Java 25 e lint do template SAM (ADR 0013, ADR 0026, ADR 0021).
-# E o check que a protecao da main exige antes do merge; o deploy so roda depois dele verde.
+# O deploy so roda depois do run do push na main verde. A protecao da main nao exige este check hoje.
 name: ci
 
 on:
