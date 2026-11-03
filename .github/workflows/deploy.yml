@@ -58,13 +58,15 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
-      # O redeploy manual so aceita commit que ja passou pela main.
+      # O redeploy manual so aceita commit que ja foi o estado da main (ADR 0027): a linha de primeiros pais.
+      # Ser ancestral nao basta, porque as PRs entram por merge commit e os commits de dentro delas tambem sao ancestrais.
       - name: Resolver commit alvo
         id: target
         run: |
           sha=$(git rev-parse HEAD)
-          if ! git merge-base --is-ancestor "$sha" origin/main; then
-            echo "::error::$sha nao esta na main"
+          # Sem pipe: com pipefail, o grep -q que sai cedo derruba o rev-list por SIGPIPE e recusaria commit valido.
+          if ! grep -qxF "$sha" <(git rev-list --first-parent origin/main); then
+            echo "::error::$sha nunca foi o estado da main (fora da linha de primeiros pais)"
             exit 1
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -176,8 +178,15 @@ jobs:
           START_DAY: ${{ steps.post.outputs.startDay }}
           RETRIED: ${{ steps.post.outputs.retried }}
         run: |
-          # Aguarda o Timeout da funcao (Globals no template.yaml): um POST com falha pode ainda estar gravando.
-          [ -z "$RETRIED" ] || sleep 30
+          # Aguarda o Timeout da funcao publicada: um POST com falha pode ainda estar gravando.
+          # Lido da AWS para nao divergir do template.yaml; sem leitura, espera 60 s, o dobro do valor atual.
+          if [ -n "$RETRIED" ]; then
+            wait_s=$(aws lambda get-function-configuration --function-name feedback-platform-receive-evaluation \
+              --qualifier live --query Timeout --output text) || wait_s=60
+            [[ "$wait_s" =~ ^[0-9]+$ ]] || wait_s=60
+            echo "Aguardando ${wait_s}s por POST em voo"
+            sleep "$wait_s"
+          fi
           days=()
           if [ -n "$DATA_ENVIO" ]; then
             days+=("$(TZ=America/Sao_Paulo date -d "$DATA_ENVIO" +%F)")

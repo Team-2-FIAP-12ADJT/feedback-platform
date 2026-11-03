@@ -7,6 +7,7 @@ Description: >
   feedback-platform - IaC (AWS SAM) em sa-east-1 (demo).
   - ADR 0004: Java 25 nas 3 funcoes + SnapStart;
   - ADR 0006: POST /avaliacao anonimo com limites na borda;
+  - ADR 0007: Operational Alert separado;
   - ADR 0008: Weekly Report seg 08:00 America/Sao_Paulo;
   - ADR 0009: Dados minimos, TTL 12 sem, logs curtos;
   - ADR 0010: DynamoDB por submissionDay + Streams/DLQ;
@@ -15,6 +16,7 @@ Description: >
   - ADR 0013: Roles prefixadas feedback-platform-;
   - ADR 0014: SES (funcoes) e SNS (Operational Alert);
   - ADR 0015: API Gateway REST + WAF (8 KB, 300 req/5 min);
+  - ADR 0016: Alarmes e dashboard;
   - ADR 0017: Retries/DLQs SQS (3 Urgency Notice, 4h Scheduler);
   - ADR 0018: Criptografia padrao AWS (SSE-SQS, DynamoDB);
   - ADR 0019: 1 role IAM por funcao (privilegio minimo);
@@ -64,6 +66,31 @@ Parameters:
     Default: 50
     Description: >
       Pico maximo (burst) de requisicoes simultaneas no API Gateway REST (ADR 0015).
+
+  # Limites ajustaveis dos alarmes de volume: pontos de partida, a calibrar depois do primeiro uso real (ADR 0016).
+  AlarmRequestsPerFiveMinutes:
+    Type: Number
+    Default: 150
+    MinValue: 1
+    Description: >
+      Gatilho 4a do Operational Alert: alarma quando o API Gateway recebe MAIS que este numero de requisicoes em
+      5 minutos (ADR 0016).
+
+  AlarmWafBlockedPerFiveMinutes:
+    Type: Number
+    Default: 50
+    MinValue: 1
+    Description: >
+      Gatilho 4b do Operational Alert: alarma quando o AWS WAF bloqueia este numero de requisicoes OU MAIS em
+      5 minutos (ADR 0016).
+
+  AlarmUrgencyNoticesPerFifteenMinutes:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    Description: >
+      Gatilho 4c do Operational Alert: alarma quando a send-urgency-notice e invocada MAIS que este numero de vezes
+      em 15 minutos, ou seja, uma enxurrada de Critical Evaluations (ADR 0016).
 
 Globals:
   Function:
@@ -508,6 +535,437 @@ Resources:
             DeadLetterConfig:
               Arn: !GetAtt WeeklyReportDlq.Arn
             RoleArn: !GetAtt SchedulerRole.Arn
+
+  # -------------------------------------------------------------------------------------------------
+  # OPERATIONAL ALERT: ALARMES DO CLOUDWATCH (ADR 0007, ADR 0016)
+  # Caminho do alerta: alarme -> regra do EventBridge, que troca o texto tecnico por uma frase em portugues ->
+  # topico SNS -> e-mail dos Administrators (ADR 0014). Por isso os alarmes nao tem AlarmActions.
+  # Falta de dado conta como "tudo bem" (notBreaching): uma semana sem Evaluations nao dispara alarme.
+  # -------------------------------------------------------------------------------------------------
+
+  # Gatilho 1: Critical Evaluation sem Urgency Notice (a mensagem esgotou as tentativas e caiu na DLQ do Streams).
+  AlarmUrgencyNoticeDlq:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-urgency-notice-dlq
+      AlarmDescription: Gatilho 1 da ADR 0016 - mensagem na DLQ da send-urgency-notice.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt UrgencyNoticeDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  # Gatilho 2a: falha ao receber Evaluation. Usa o 5XXError do gateway, nao o Errors da funcao: a receive-evaluation
+  # devolve 500 como resposta HTTP, o que para a Lambda nao e erro (ADR 0016).
+  AlarmApi5xx:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-api-5xx
+      AlarmDescription: Gatilho 2a da ADR 0016 - 5XXError do API Gateway.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub 'feedback-platform-api-${Environment}'
+        - Name: Stage
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  # Gatilho 2b: falha no envio do Urgency Notice (o Streams ainda vai tentar de novo, ADR 0017).
+  AlarmUrgencyNoticeErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-urgency-notice-errors
+      AlarmDescription: Gatilho 2b da ADR 0016 - Errors da send-urgency-notice.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SendUrgencyNoticeFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  # Gatilho 3, parte 1: a send-weekly-report rodou e falhou.
+  AlarmWeeklyReportErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-weekly-report-errors
+      AlarmDescription: Gatilho 3 da ADR 0016 - Errors da send-weekly-report.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SendWeeklyReportFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  # Gatilho 3, parte 2: a send-weekly-report nao rodou - o agendador nao conseguiu invoca-la e o evento caiu na DLQ
+  # dele. Nao ha metrica de batimento: o relatorio que sempre chega ja e o sinal de vida (ADR 0016).
+  AlarmWeeklyReportDlq:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-weekly-report-dlq
+      AlarmDescription: Gatilho 3 da ADR 0016 - mensagem na DLQ do agendador do Weekly Report.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt WeeklyReportDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  # Gatilho 4a: volume anormal de requisicoes. 150 em 5 min nao dispara com uma turma avaliando junta, e dispara
+  # antes de o WAF bloquear um script, que so corta acima de 300 por IP (ADR 0015, ADR 0016).
+  AlarmApiRequests:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-api-requests
+      AlarmDescription: Gatilho 4a da ADR 0016 - Count do API Gateway acima do limite.
+      Namespace: AWS/ApiGateway
+      MetricName: Count
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub 'feedback-platform-api-${Environment}'
+        - Name: Stage
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref AlarmRequestsPerFiveMinutes
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # Gatilho 4b: envio automatizado barrado pelo WAF (todas as regras da Web ACL somadas).
+  AlarmWafBlocked:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-waf-blocked
+      AlarmDescription: Gatilho 4b da ADR 0016 - BlockedRequests da Web ACL do WAF.
+      Namespace: AWS/WAFV2
+      MetricName: BlockedRequests
+      Dimensions:
+        - Name: WebACL
+          Value: !Sub 'feedback-platform-waf-${Environment}'
+        - Name: Rule
+          Value: ALL
+        - Name: Region
+          Value: !Ref AWS::Region
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref AlarmWafBlockedPerFiveMinutes
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  # Gatilho 4c: enxurrada de Critical Evaluations. Conta invocacoes da send-urgency-notice porque o filtro do Streams
+  # so a acorda para Critical Evaluations (ADR 0010, ADR 0016).
+  AlarmUrgencyNoticeInvocations:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: feedback-platform-urgency-notice-invocations
+      AlarmDescription: Gatilho 4c da ADR 0016 - Invocations da send-urgency-notice acima do limite.
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SendUrgencyNoticeFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref AlarmUrgencyNoticesPerFifteenMinutes
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # -------------------------------------------------------------------------------------------------
+  # OPERATIONAL ALERT: REGRAS DO EVENTBRIDGE (ADR 0014, ADR 0016)
+  # Uma regra por frase ao Administrator; o gatilho 3 tem dois alarmes e uma regra so. Cada regra casa a passagem
+  # do alarme para ALARM (a volta para OK nao avisa) e entrega ao topico SNS so a frase da ADR 0016, sem o JSON tecnico
+  # do CloudWatch. O InputTemplate e uma string sem variaveis; para string o EventBridge exige aspas e as mantem na
+  # saida (guia do EventBridge, "Input transformation"), entao o e-mail mostra a frase entre aspas. Prova no deploy:
+  # forcar o alarme com aws cloudwatch set-alarm-state (roteiro da T-10).
+  # -------------------------------------------------------------------------------------------------
+  AlertRuleUrgencyNoticeDlq:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: feedback-platform-alert-urgency-notice-dlq
+      Description: Gatilho 1 da ADR 0016 para o Operational Alert.
+      EventPattern:
+        source: [aws.cloudwatch]
+        detail-type: [CloudWatch Alarm State Change]
+        detail:
+          alarmName: [!Ref AlarmUrgencyNoticeDlq]
+          state:
+            value: [ALARM]
+      Targets:
+        - Id: OperationalAlert
+          Arn: !Ref OperationalAlertTopic
+          InputTransformer:
+            InputTemplate: '"1 avaliação crítica não pôde ser avisada"'
+
+  AlertRuleApi5xx:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: feedback-platform-alert-api-5xx
+      Description: Gatilho 2a da ADR 0016 para o Operational Alert.
+      EventPattern:
+        source: [aws.cloudwatch]
+        detail-type: [CloudWatch Alarm State Change]
+        detail:
+          alarmName: [!Ref AlarmApi5xx]
+          state:
+            value: [ALARM]
+      Targets:
+        - Id: OperationalAlert
+          Arn: !Ref OperationalAlertTopic
+          InputTransformer:
+            InputTemplate: '"Estudantes não estão conseguindo enviar avaliações"'
+
+  AlertRuleUrgencyNoticeErrors:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: feedback-platform-alert-urgency-notice-errors
+      Description: Gatilho 2b da ADR 0016 para o Operational Alert.
+      EventPattern:
+        source: [aws.cloudwatch]
+        detail-type: [CloudWatch Alarm State Change]
+        detail:
+          alarmName: [!Ref AlarmUrgencyNoticeErrors]
+          state:
+            value: [ALARM]
+      Targets:
+        - Id: OperationalAlert
+          Arn: !Ref OperationalAlertTopic
+          InputTransformer:
+            InputTemplate: '"O envio de avisos está falhando; a plataforma está tentando de novo"'
+
+  AlertRuleWeeklyReport:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: feedback-platform-alert-weekly-report
+      Description: Gatilho 3 da ADR 0016 para o Operational Alert (erro da funcao ou DLQ do agendador).
+      EventPattern:
+        source: [aws.cloudwatch]
+        detail-type: [CloudWatch Alarm State Change]
+        detail:
+          alarmName:
+            - !Ref AlarmWeeklyReportErrors
+            - !Ref AlarmWeeklyReportDlq
+          state:
+            value: [ALARM]
+      Targets:
+        - Id: OperationalAlert
+          Arn: !Ref OperationalAlertTopic
+          InputTransformer:
+            InputTemplate: '"O relatório semanal não foi enviado"'
+
+  AlertRuleApiRequests:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: feedback-platform-alert-api-requests
+      Description: Gatilho 4a da ADR 0016 para o Operational Alert.
+      EventPattern:
+        source: [aws.cloudwatch]
+        detail-type: [CloudWatch Alarm State Change]
+        detail:
+          alarmName: [!Ref AlarmApiRequests]
+          state:
+            value: [ALARM]
+      Targets:
+        - Id: OperationalAlert
+          Arn: !Ref OperationalAlertTopic
+          InputTransformer:
+            InputTemplate: '"Volume de avaliações muito acima do normal"'
+
+  AlertRuleWafBlocked:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: feedback-platform-alert-waf-blocked
+      Description: Gatilho 4b da ADR 0016 para o Operational Alert.
+      EventPattern:
+        source: [aws.cloudwatch]
+        detail-type: [CloudWatch Alarm State Change]
+        detail:
+          alarmName: [!Ref AlarmWafBlocked]
+          state:
+            value: [ALARM]
+      Targets:
+        - Id: OperationalAlert
+          Arn: !Ref OperationalAlertTopic
+          InputTransformer:
+            InputTemplate: '"Envio automatizado de avaliações foi bloqueado"'
+
+  AlertRuleUrgencyNoticeInvocations:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: feedback-platform-alert-urgency-notice-invocations
+      Description: Gatilho 4c da ADR 0016 para o Operational Alert.
+      EventPattern:
+        source: [aws.cloudwatch]
+        detail-type: [CloudWatch Alarm State Change]
+        detail:
+          alarmName: [!Ref AlarmUrgencyNoticeInvocations]
+          state:
+            value: [ALARM]
+      Targets:
+        - Id: OperationalAlert
+          Arn: !Ref OperationalAlertTopic
+          InputTransformer:
+            InputTemplate: '"Número anormal de avaliações críticas"'
+
+  # Quem pode publicar no topico do Operational Alert (ADR 0014, ADR 0016):
+  # - as regras acima, e so elas (prefixo do nome das regras, nesta conta e regiao);
+  # - o AWS Budgets desta conta, para o gatilho 5 (custo), que usa a mensagem padrao do Budgets.
+  # A gestao do topico e das assinaturas segue pelas permissoes IAM da propria conta, que valem sem citacao aqui.
+  # Gatilho 5 fora do template: o orcamento feedback-platform-mensal ja existe na conta, e a role de deploy nao alcanca o
+  # AWS Budgets (a API responde em us-east-1, e a role nega toda regiao fora de sa-east-1). Um Administrator acrescenta
+  # o ARN do topico (saida OperationalAlertTopicArn) as notificacoes de 80% e 100% do orcamento, uma vez.
+  OperationalAlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref OperationalAlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowOperationalAlertRules
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OperationalAlertTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/feedback-platform-alert-*'
+          - Sid: AllowAccountBudgets
+            Effect: Allow
+            Principal:
+              Service: budgets.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OperationalAlertTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:budgets::${AWS::AccountId}:*'
+
+  # -------------------------------------------------------------------------------------------------
+  # DASHBOARD DO CLOUDWATCH (ADR 0016)
+  # Reune o que os alarmes olham: requisicoes, Critical Evaluations, erros, DLQs e bloqueios do WAF. E a
+  # configuracao do monitoramento mostrada no video.
+  # -------------------------------------------------------------------------------------------------
+  OperationalDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'feedback-platform-${Environment}'
+      DashboardBody: !Sub
+        - |
+          {
+            "widgets": [
+              {
+                "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Requisicoes ao POST /avaliacao (API Gateway)",
+                  "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                  "metrics": [
+                    ["AWS/ApiGateway", "Count", "ApiName", "${ApiName}", "Stage", "${Environment}"]
+                  ]
+                }
+              },
+              {
+                "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Critical Evaluations (invocacoes da send-urgency-notice)",
+                  "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                  "metrics": [
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${SendUrgencyNoticeFunction}"]
+                  ]
+                }
+              },
+              {
+                "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Erros (5XX do gateway e Errors das funcoes)",
+                  "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                  "metrics": [
+                    ["AWS/ApiGateway", "5XXError", "ApiName", "${ApiName}", "Stage", "${Environment}"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${ReceiveEvaluationFunction}"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${SendUrgencyNoticeFunction}"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${SendWeeklyReportFunction}"]
+                  ]
+                }
+              },
+              {
+                "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Mensagens nas DLQs",
+                  "region": "${AWS::Region}", "view": "timeSeries", "stat": "Maximum", "period": 300,
+                  "metrics": [
+                    ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${UrgencyNoticeDlq.QueueName}"],
+                    ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${WeeklyReportDlq.QueueName}"]
+                  ]
+                }
+              },
+              {
+                "type": "metric", "x": 0, "y": 12, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Requisicoes bloqueadas pelo WAF",
+                  "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                  "metrics": [
+                    ["AWS/WAFV2", "BlockedRequests", "WebACL", "${WebAclName}", "Rule", "ALL", "Region", "${AWS::Region}"]
+                  ]
+                }
+              },
+              {
+                "type": "alarm", "x": 12, "y": 12, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Alarmes do Operational Alert",
+                  "alarms": [
+                    "${AlarmUrgencyNoticeDlq.Arn}",
+                    "${AlarmApi5xx.Arn}",
+                    "${AlarmUrgencyNoticeErrors.Arn}",
+                    "${AlarmWeeklyReportErrors.Arn}",
+                    "${AlarmWeeklyReportDlq.Arn}",
+                    "${AlarmApiRequests.Arn}",
+                    "${AlarmWafBlocked.Arn}",
+                    "${AlarmUrgencyNoticeInvocations.Arn}"
+                  ]
+                }
+              }
+            ]
+          }
+        - ApiName: !Sub 'feedback-platform-api-${Environment}'
+          WebAclName: !Sub 'feedback-platform-waf-${Environment}'
 
 # -------------------------------------------------------------------------------------------------
 # SAIDAS (OUTPUTS)
