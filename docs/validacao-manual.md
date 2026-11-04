@@ -133,6 +133,10 @@ Anexar ou linkar na PR do T-10:
 4. Dashboard e alarmes do Operational Alert.
 5. Log do clone limpo com `mvn clean verify` + `sam validate --lint`.
 
+### Captura de prints
+
+Em **cada** print de evidência, incluir o timestamp no **canto superior direito**, no formato **dia/mês/ano hora:minuto** (exemplo: `03/11/2026 21:10`), exatamente como especificado para o T-10. Não omitir o relógio no canto; não usar outro formato de data.
+
 ---
 
 ## Fora de escopo deste documento
