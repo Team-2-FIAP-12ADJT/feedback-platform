@@ -1,0 +1,46 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<title>T-10 Postman collection — resultado HTTP</title>
+<style>
+  body { font-family: Consolas, monospace; background:#0f1419; color:#e7ecf1; margin:24px; }
+  h1 { font-size:18px; }
+  .meta { color:#9aa7b5; margin-bottom:16px; }
+  table { border-collapse: collapse; width:100%; }
+  th, td { border:1px solid #2a3540; padding:8px 10px; text-align:left; font-size:13px; }
+  th { background:#1a2330; }
+  .ok { color:#3dd68c; }
+  .stamp { position:fixed; top:12px; right:16px; background:rgba(0,0,0,.75); color:#fff; padding:6px 10px; font-size:14px; z-index:9; }
+</style>
+</head>
+<body>
+<div class="stamp">03/11/2026 21:11</div>
+<h1>T-10 — collection Postman vs demo ApiEndpoint</h1>
+<p class="meta">baseUrl: https://wj8xwzgmmf.execute-api.sa-east-1.amazonaws.com/demo/avaliacao<br/>19/19 status OK (runner PowerShell/curl espelhando docs/postman/)</p>
+<table>
+<thead><tr><th>#</th><th>Caso</th><th>Método</th><th>Path</th><th>Esperado</th><th>Recebido</th><th>OK?</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Score 8 LOW</td><td>POST</td><td>/avaliacao</td><td>201</td><td>201</td><td class="ok">sim</td></tr>
+<tr><td>2</td><td>Score 5 MEDIUM</td><td>POST</td><td>/avaliacao</td><td>201</td><td>201</td><td class="ok">sim</td></tr>
+<tr><td>3</td><td>Score 2 CRITICAL</td><td>POST</td><td>/avaliacao</td><td>201</td><td>201</td><td class="ok">sim</td></tr>
+<tr><td>4</td><td>nota ausente</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>5</td><td>nota null</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>6</td><td>nota -1</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>7</td><td>nota 11</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>8</td><td>nota 7.5</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>9</td><td>nota 7.0</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>10</td><td>nota texto</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>11</td><td>descricao vazia</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>12</td><td>descricao so espacos</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>13</td><td>descricao &gt; 1000</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>14</td><td>campo urgencia</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>15</td><td>JSON malformado</td><td>POST</td><td>/avaliacao</td><td>400</td><td>400</td><td class="ok">sim</td></tr>
+<tr><td>16</td><td>Content-Type text/plain</td><td>POST</td><td>/avaliacao</td><td>415</td><td>415</td><td class="ok">sim</td></tr>
+<tr><td>17</td><td>corpo &gt; 8 KB</td><td>POST</td><td>/avaliacao</td><td>413</td><td>413</td><td class="ok">sim</td></tr>
+<tr><td>18</td><td>GET na rota</td><td>GET</td><td>/avaliacao</td><td>403|404</td><td>403</td><td class="ok">sim</td></tr>
+<tr><td>19</td><td>POST rota inexistente</td><td>POST</td><td>/avaliacao-inexistente</td><td>403|404</td><td>403</td><td class="ok">sim</td></tr>
+</tbody>
+</table>
+</body>
+</html>
