@@ -16,6 +16,12 @@ import software.amazon.awssdk.services.ses.SesClient;
 public class InfrastructureConfig {
 
     /**
+     * Cria a configuração de infraestrutura da função {@code send-urgency-notice}.
+     */
+    public InfrastructureConfig() {
+    }
+
+    /**
      * Produz o relógio UTC injetável para registrar a marca {@code urgencyNoticeSentAt}, conforme ADR 0005 e ADR 0022.
      *
      * @return relógio em UTC

@@ -12,12 +12,27 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 /** Produz dependências de infraestrutura, conforme ADRs 0004, 0010 e 0019. */
 @ApplicationScoped
 public class InfrastructureConfig {
-    /** Produz o relógio UTC injetável para tornar o Submission Time determinístico nos testes. */
+    /**
+     * Cria a configuração de infraestrutura da função {@code receive-evaluation}.
+     */
+    public InfrastructureConfig() {
+    }
+
+    /**
+     * Produz o relógio UTC injetável para tornar o Submission Time determinístico nos testes.
+     *
+     * @return relógio UTC
+     */
     @Produces
     @ApplicationScoped
     public Clock clock() { return Clock.systemUTC(); }
 
-    /** Produz o cliente DynamoDB SDK v2 com o transporte URL, sem cliente Netty ou Apache. */
+    /**
+     * Produz o cliente DynamoDB SDK v2 com o transporte URL, sem cliente Netty ou Apache.
+     *
+     * @param endpoint endereço opcional do DynamoDB, usado nos testes
+     * @return cliente configurado para gravar a Evaluation
+     */
     @Produces
     @ApplicationScoped
     public DynamoDbClient dynamoDbClient(

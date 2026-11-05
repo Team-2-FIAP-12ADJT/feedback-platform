@@ -2,6 +2,8 @@ package br.com.fiap.feedbackplatform.domain;
 
 /**
  * Representa o Score inteiro permitido para uma Evaluation, conforme ADR 0001 e o contrato POST /avaliacao.
+ *
+ * @param value valor inteiro do Score, de 0 a 10
  */
 public record Score(int value) {
 

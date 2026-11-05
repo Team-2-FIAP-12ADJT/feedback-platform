@@ -10,6 +10,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class SendWeeklyReportApplication {
 
     /**
+     * Cria a aplicação Spring Boot da função {@code send-weekly-report}.
+     */
+    public SendWeeklyReportApplication() {
+    }
+
+    /**
      * Ponto de entrada padrão Spring Boot.
      *
      * @param args argumentos da linha de comando

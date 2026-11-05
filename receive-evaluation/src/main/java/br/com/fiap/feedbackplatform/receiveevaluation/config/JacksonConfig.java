@@ -12,7 +12,17 @@ import jakarta.inject.Singleton;
 /** Configura o Jackson para aceitar somente o JSON estrito do contrato. */
 @Singleton
 public class JacksonConfig implements ObjectMapperCustomizer {
-    /** Desliga coerções de escalares e aceita somente inteiro JSON para nota. */
+    /**
+     * Cria a configuração do Jackson da função {@code receive-evaluation}.
+     */
+    public JacksonConfig() {
+    }
+
+    /**
+     * Desliga coerções de escalares e aceita somente inteiro JSON para nota.
+     *
+     * @param mapper mapeador Jackson da função {@code receive-evaluation}
+     */
     @Override
     public void customize(ObjectMapper mapper) {
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
