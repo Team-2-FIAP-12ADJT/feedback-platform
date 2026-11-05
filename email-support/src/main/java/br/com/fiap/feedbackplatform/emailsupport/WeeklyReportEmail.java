@@ -23,6 +23,9 @@ public final class WeeklyReportEmail {
         "sexta-feira", "sábado", "domingo"
     };
 
+    /**
+     * Impede a instanciação desta classe de montagem.
+     */
     private WeeklyReportEmail() {
     }
 

@@ -4,6 +4,9 @@ package br.com.fiap.feedbackplatform.emailsupport;
  * Escapa caracteres especiais de Description interpolada em HTML, conforme ADRs 0004 e 0008.
  */
 final class HtmlEscaper {
+    /**
+     * Impede a instanciação desta classe de escape.
+     */
     private HtmlEscaper() {
     }
 

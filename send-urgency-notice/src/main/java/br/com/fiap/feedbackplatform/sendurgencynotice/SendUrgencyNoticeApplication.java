@@ -11,6 +11,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class SendUrgencyNoticeApplication {
 
     /**
+     * Cria a aplicação Spring Boot da função {@code send-urgency-notice}.
+     */
+    public SendUrgencyNoticeApplication() {
+    }
+
+    /**
      * Inicia o contexto da aplicação Spring Boot sem servidor web, conforme ADR 0004.
      *
      * @param args argumentos de inicialização

@@ -4,8 +4,11 @@ package br.com.fiap.feedbackplatform.domain;
  * Classifica uma Evaluation conforme seu Score, conforme ADR 0001.
  */
 public enum Urgency {
+    /** Evaluation com Score de 0 a 3. Só esta Urgency gera o Urgency Notice. */
     CRITICAL,
+    /** Evaluation com Score de 4 a 6. Não gera Urgency Notice. */
     MEDIUM,
+    /** Evaluation com Score de 7 a 10. Não gera Urgency Notice. */
     LOW;
 
     /**
