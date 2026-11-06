@@ -6,13 +6,15 @@ Plataforma de feedback de aulas: estudantes avaliam as aulas, administradores re
 itens críticos e um relatório semanal com a média das avaliações.
 
 > **Estado:** desenho da aplicação e da cloud decidido (ADRs 0001–0027, todas `aceita`). As três funções, o template
-> SAM, a bootstrap do OIDC e os workflows `ci` e `deploy` estão na `main`, e o deploy automático roda desde
-> 31/10/2026. O que falta está no board do grupo.
+> SAM, a bootstrap do OIDC e os workflows `ci` e `deploy` estão na `main`; o deploy automático roda em `sa-east-1`
+> (ambiente único `demo`). A validação manual e a collection Postman estão em
+> [`docs/validacao-manual.md`](docs/validacao-manual.md) e [`docs/postman/`](docs/postman/).
 >
 > **Prazo de entrega: 17/11/2026.**
 
 Enunciado: [`docs/ADJT - Fase 4 - Tech Challenge_rev.pdf`](<docs/ADJT - Fase 4 - Tech Challenge_rev.pdf>).
 Glossário: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) — termos canônicos em inglês, mapeados para as palavras do enunciado.
+Contrato HTTP: [`docs/contracts/receive-evaluation.md`](docs/contracts/receive-evaluation.md).
 
 ## O que o enunciado exige
 
@@ -25,6 +27,240 @@ Glossário: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) — termos canônicos em inglês,
 | Ambiente | Segurança dos dados e governança de acesso; componentes de suporte (banco etc.); deploy automatizado dos componentes atualizáveis; monitoramento; notificação automática aos administradores para problemas críticos |
 | Entrega | Repositório aberto + **vídeo** mostrando a aplicação, as funções serverless ativas e as configurações |
 | Avaliação | Modelo de cloud e componentes explicados; funcionamento; código documentado; descrição com arquitetura, instruções de deploy, configuração do monitoramento e documentação das funções; configuração de nuvem e segurança explicadas |
+
+## Arquitetura e modelo de cloud
+
+Ambiente único **`demo`** em **`sa-east-1`** ([ADR 0021](docs/adr/0021-um-ambiente-so.md), [ADR 0011](docs/adr/0011-regiao-sao-paulo.md)). Stack CloudFormation/SAM: `feedback-platform`.
+
+```mermaid
+flowchart LR
+  subgraph sync["Fluxo síncrono"]
+    S[Student] --> WAF[AWS WAF]
+    WAF --> APIGW[API Gateway REST<br/>POST /avaliacao]
+    APIGW --> RE[receive-evaluation]
+    RE --> DDB[(DynamoDB<br/>evaluations)]
+  end
+
+  subgraph urg["Urgency Notice"]
+    DDB -->|Streams INSERT + CRITICAL| SUN[send-urgency-notice]
+    SUN --> SES1[Amazon SES]
+    SUN -->|urgencyNoticeSentAt| DDB
+    SUN -.->|falha| DLQ1[DLQ SQS]
+  end
+
+  subgraph week["Weekly Report"]
+    SCH[EventBridge Scheduler<br/>ScheduleV2 seg 08:00 BRT] --> SWR[send-weekly-report]
+    SWR -->|7 Query| DDB
+    SWR --> SES2[Amazon SES]
+    SCH -.->|falha| DLQ2[DLQ SQS]
+  end
+
+  subgraph ops["Operational Alert"]
+    AL[CloudWatch Alarms] --> EB[EventBridge<br/>frase em português]
+    BUD[AWS Budgets] --> SNS[Amazon SNS]
+    EB --> SNS
+    SNS --> ADM[Administrators]
+  end
+```
+
+### Por que três funções e dois canais
+
+- **Três funções, uma responsabilidade cada** ([ADR 0003](docs/adr/0003-tres-funcoes-aviso-nasce-da-gravacao.md)): a HTTP só grava; o aviso de urgência nasce do Streams após a gravação; o relatório semanal é outro gatilho (agendador). Falha ou escala de um fluxo não segura os outros.
+- **SES para as funções de negócio** (Urgency Notice e Weekly Report): HTML + texto, remetente e destinatários da lista de Administrators ([ADR 0014](docs/adr/0014-ses-para-funcoes-sns-para-alerta.md), [ADR 0023](docs/adr/0023-remetente-e-o-primeiro-administrator.md)).
+- **SNS para o Operational Alert**: caminho curto CloudWatch/Budgets → EventBridge (texto não técnico) → e-mail, separado do conteúdo pedagógico ([ADR 0007](docs/adr/0007-operational-alert-separado-do-urgency-notice.md)).
+
+### Componentes de suporte
+
+| Componente | Papel |
+|---|---|
+| DynamoDB `evaluations` | Partition key `submissionDay` (dia em `America/Sao_Paulo`); sort key `id`; Streams; TTL `expiresAt` (12 semanas) |
+| API Gateway REST + WAF | Borda pública HTTPS; limites de corpo e taxa |
+| EventBridge Scheduler | `ScheduleV2`, segunda 08:00 `America/Sao_Paulo` |
+| SQS DLQs | Falhas do Streams (Urgency) e do agendador (Weekly) |
+| CloudWatch | Logs das funções, alarmes, dashboard `feedback-platform-demo` |
+| Pilha bootstrap OIDC | Fora do `template.yaml`: role `feedback-platform-deploy` ([`infra/bootstrap-oidc.yaml`](infra/bootstrap-oidc.yaml)) |
+
+Outputs úteis da stack (console CloudFormation, sem colar ARNs com ID de conta neste README): `ApiEndpoint`, `EvaluationsTableName`, `OperationalAlertTopicArn`.
+
+## Funções e módulos do monorepo
+
+Monorepo Maven, **Java 25**, **SnapStart** ligado nas três Lambdas ([ADR 0004](docs/adr/0004-framework-escolhido-pelo-gatilho.md), [ADR 0011](docs/adr/0011-regiao-sao-paulo.md)). Nomes publicados: `feedback-platform-receive-evaluation`, `feedback-platform-send-urgency-notice`, `feedback-platform-send-weekly-report`.
+
+### `domain`
+
+Biblioteca Java pura (sem framework de nuvem): `Score`, `Urgency`, `Evaluation`, `ReportWeek`, `WeeklyReport`. Regras de faixa CRITICAL/MEDIUM/LOW e agregação da semana.
+
+### `email-support`
+
+Montagem HTML/texto, escape de Description e rótulos em português dos e-mails de Urgency Notice e Weekly Report.
+
+### `receive-evaluation` (Quarkus)
+
+| | |
+|---|---|
+| **Responsabilidade** | Validar o contrato e gravar a Evaluation |
+| **Gatilho** | `POST /avaliacao` via API Gateway |
+| **Entrada** | JSON `{ "descricao", "nota" }` (`application/json`) |
+| **Saída** | `201` com `id` e `dataEnvio` (sem `urgency`, sem `Location`); ou `problem+json` |
+| **Env** | `EVALUATIONS_TABLE` |
+| **Permissões** | Role `feedback-platform-receive-evaluation`: `dynamodb:PutItem` na tabela + logs próprios |
+
+### `send-urgency-notice` (Spring Boot)
+
+| | |
+|---|---|
+| **Responsabilidade** | Enviar Urgency Notice só para `CRITICAL` e marcar `urgencyNoticeSentAt` |
+| **Gatilho** | DynamoDB Streams, filtro `INSERT` + `urgency = CRITICAL` |
+| **Entrada** | Registros do Streams (lote com `ReportBatchItemFailures`) |
+| **Saída** | E-mail SES; atualização da marca na Evaluation; falhas → DLQ após tentativas |
+| **Env** | `EVALUATIONS_TABLE`, `ADMINISTRATORS` (lista CSV; 1º = remetente SES) |
+| **Permissões** | Role `feedback-platform-send-urgency-notice`: leitura/atualização restrita à marca, `ses:SendEmail` com `FromAddress`, DLQ, logs |
+
+### `send-weekly-report` (Spring Boot)
+
+| | |
+|---|---|
+| **Responsabilidade** | Consolidar a Report Week (seg–dom Brasília) e enviar o relatório |
+| **Gatilho** | EventBridge Scheduler (`cron(0 8 ? * MON *)`, fuso `America/Sao_Paulo`) ou invoke manual |
+| **Entrada** | Evento com `time` (agendado) ou mapa/string com `reportWeek` / `week` (ex.: `2026-W46`) |
+| **Saída** | E-mail SES (média, contagens por dia e por urgência; teto de 500 na lista) |
+| **Env** | `EVALUATIONS_TABLE`, `ADMINISTRATORS`, região AWS |
+| **Permissões** | Role `feedback-platform-send-weekly-report`: `dynamodb:Query`, SES, logs. Role à parte `feedback-platform-scheduler` só invoca a função e a DLQ do agendador |
+
+## Segurança dos dados e governança de acesso
+
+### Borda (API Gateway REST + WAF)
+
+([ADR 0006](docs/adr/0006-endpoint-anonimo.md), [ADR 0015](docs/adr/0015-rest-api-com-waf.md))
+
+- Corpo até **8 KB** → `413`
+- **300** requisições / 5 min por IP → `429`
+- Teto global **20 req/s** (burst 50) → `429`
+- HTTPS obrigatório; logs de acesso do API Gateway com retenção curta (14 dias)
+
+### Privacidade e retenção
+
+([ADR 0009](docs/adr/0009-dados-gravados-retencao-e-logs.md))
+
+- Payload sem identidade do Student
+- TTL de **12 semanas** (`expiresAt`)
+- CloudWatch Logs **sem** Description, **sem** valor recusado em validação, **sem** e-mail de Administrator
+
+### Criptografia
+
+([ADR 0018](docs/adr/0018-criptografia-padrao-da-aws.md))
+
+- Trânsito: TLS
+- Repouso: chaves padrão da AWS (DynamoDB, Streams, SQS SSE-SQS, Logs, artefatos S3 SSE-S3)
+- Tópico SNS do Operational Alert sem SSE de servidor (justificativa na ADR): o caminho prioriza entrega do alerta operacional
+
+### Roles IAM (privilégio mínimo)
+
+([ADR 0019](docs/adr/0019-uma-role-por-funcao.md))
+
+1. `feedback-platform-receive-evaluation`
+2. `feedback-platform-send-urgency-notice`
+3. `feedback-platform-send-weekly-report`
+4. `feedback-platform-scheduler`
+
+Condições restritivas onde cabem (`dynamodb:Attributes` na marca do Urgency Notice; `ses:FromAddress`). Permissions boundary criada na bootstrap impede roles `feedback-platform-*` largas.
+
+### Conta e pipeline
+
+([ADR 0012](docs/adr/0012-iac-com-aws-sam.md), [ADR 0013](docs/adr/0013-pipeline-deploy-automatico-oidc.md))
+
+- Deploy via **OIDC** (sem chave de longa duração no GitHub): role `feedback-platform-deploy`, confiança só na branch `main`, região `sa-east-1` e recursos `feedback-platform-*`
+- Acesso humano: grupo de administradores com **MFA**, console / `aws login`; emergência separada — **não** versionar ID de conta AWS, ARNs reais com account id, nem e-mails de integrantes neste repositório público
+
+## Build, testes e deploy
+
+### Local
+
+Pré-requisitos típicos: JDK 25, Maven 3.9+, Docker (Testcontainers / DynamoDB Local), SAM CLI (com `SAM_CLI_ENABLE_LANGUAGE_EXTENSIONS=1` se o CLI exigir — o template usa `AWS::LanguageExtensions`).
+
+```bash
+mvn clean verify
+sam validate --lint --template template.yaml
+```
+
+Validação ponta a ponta na demo (roteiro + collection):
+
+- [`docs/validacao-manual.md`](docs/validacao-manual.md)
+- [`docs/postman/`](docs/postman/) — variável `baseUrl` = output `ApiEndpoint` da stack
+- Evidências de uma execução: [`docs/evidencias-t10/`](docs/evidencias-t10/)
+
+### Estratégia de testes automatizados
+
+1. **`domain`** — unitários: Scores × faixas; agregação do Weekly Report (semana vazia, fronteira de domingo em Brasília, teto de 500).
+2. **`receive-evaluation`** — tabela do contrato → `201` / `problem+json`; DynamoDB emulado.
+3. **`send-urgency-notice` / `send-weekly-report`** — só CRITICAL gera aviso; idempotência da marca; escape HTML; mesma semana → mesmo relatório.
+4. Regras críticas: teste que quebra o código de propósito precisa ficar vermelho.
+5. **Ponta a ponta** — roteiro e Postman acima (também base do vídeo).
+
+### Bootstrap OIDC (uma vez por conta)
+
+Aplicar [`infra/bootstrap-oidc.yaml`](infra/bootstrap-oidc.yaml) em `sa-east-1` com um administrador MFA (fora do deploy contínuo). Cria o provedor OIDC do GitHub Actions (se ainda não existir), a role `feedback-platform-deploy`, o permissions boundary das funções e, se pedido, a role de logs do API Gateway.
+
+### Variables do GitHub (repositório)
+
+Documentar só com placeholders — **não** colocar e-mails reais nem o ARN completo com account id no README:
+
+| Variable | Uso |
+|---|---|
+| `ADMINISTRATORS` | Lista CSV dos Administrators; **primeiro** endereço = remetente SES e identidade a verificar |
+| `AWS_DEPLOY_ROLE_ARN` | ARN da role `feedback-platform-deploy` (preencher no GitHub, não neste arquivo) |
+
+### Deploy automático e redeploy
+
+- **CI** (`.github/workflows/ci.yml`): em toda PR e no push da `main`.
+- **Deploy** (`.github/workflows/deploy.yml`): após `ci` verde no push da `main` (OIDC); exige as variables acima; termina com **teste de fumaça** que grava uma Evaluation, confere SnapStart e **apaga** a Evaluation para não poluir o Weekly Report ([ADR 0024](docs/adr/0024-teste-de-fumaca-apaga-a-propria-evaluation.md), [ADR 0025](docs/adr/0025-teste-de-fumaca-remove-por-descricao.md)).
+- **Redeploy manual**: `workflow_dispatch` com `ref` = SHA que já foi estado da `main` (linha de primeiros pais) ([ADR 0026](docs/adr/0026-redeploy-manual-de-commit-da-main.md), [ADR 0027](docs/adr/0027-redeploy-so-da-linha-principal-da-main.md)).
+
+### Pós-deploy (Administrators)
+
+1. Confirmar e-mails de **verificação SES** (sandbox) e de **assinatura SNS** do tópico Operational Alert.
+2. Cada Administrator cria na própria caixa a regra **“nunca enviar para o spam”** para o remetente (= 1º de `ADMINISTRATORS`), porque o e-mail chega sem autenticação forte de domínio ([ADR 0023](docs/adr/0023-remetente-e-o-primeiro-administrator.md)).
+3. Uma vez: acrescentar o ARN do tópico Operational Alert (output da stack) às notificações de **80%** e **100%** do orçamento da conta (gatilho 5 — Budgets opera fora de `sa-east-1` no console).
+
+## Monitoramento e procedimentos operacionais
+
+### Operational Alert
+
+Caminho: alarme CloudWatch → regra EventBridge com `InputTransformer` (frase em português) → tópico SNS `feedback-platform-operational-alert` → Administrators. Os alarmes **não** usam `AlarmActions` diretas ([ADR 0014](docs/adr/0014-ses-para-funcoes-sns-para-alerta.md), [ADR 0016](docs/adr/0016-alarmes-do-operational-alert.md)).
+
+| # | Gatilho | Dispara quando | Frase (resumo) |
+|---|---|---|---|
+| 1 | Critical sem Urgency Notice | ≥ 1 msg na DLQ da `send-urgency-notice` | avaliação crítica não pôde ser avisada |
+| 2a | Falha ao receber | ≥ 5 `5XXError` do API Gateway / 5 min | estudantes não conseguem enviar |
+| 2b | Falha no Urgency Notice | ≥ 3 `Errors` da função / 5 min | envio de avisos falhando |
+| 3 | Weekly falhou / não rodou | ≥ 1 erro da função **ou** msg na DLQ do agendador | relatório semanal não enviado |
+| 4a | Volume anormal | > 150 req API / 5 min | volume acima do normal |
+| 4b | WAF barrando | ≥ 50 bloqueios / 5 min | envio automatizado bloqueado |
+| 4c | Enxurrada CRITICAL | > 30 invocações da `send-urgency-notice` / 15 min | número anormal de críticas |
+| 5 | Custo | orçamento 80% / 100% | texto padrão do AWS Budgets |
+
+Dashboard: **`feedback-platform-demo`** (requisições, Critical Evaluations, erros, DLQs, bloqueios WAF).
+
+### Reenvio de Urgency Notice
+
+A recuperação **não** depende da DLQ do Streams (ponteiro expira rápido). Usa a marca na tabela ([ADR 0017](docs/adr/0017-tentativas-e-filas-de-falha.md), [ADR 0005](docs/adr/0005-entrega-pelo-menos-uma-vez.md)):
+
+1. No DynamoDB (`sa-east-1`), partição `submissionDay` = dia desejado (`yyyy-MM-dd` em Brasília).
+2. Localizar itens com `urgency = CRITICAL` **sem** atributo `urgencyNoticeSentAt`.
+3. Reenviar o aviso (fluxo operacional / reprocessamento alinhado à função) até a marca aparecer — sem inventar função nova no template.
+
+### Invoke manual do Weekly Report
+
+Se o agendado esgotar as ~4 h de tentativas ([ADR 0017](docs/adr/0017-tentativas-e-filas-de-falha.md)):
+
+1. Console Lambda → `feedback-platform-send-weekly-report` → Test / Invoke.
+2. Payload com a semana desejada, por exemplo:
+
+```json
+{ "reportWeek": "2026-W46" }
+```
+
+(Também aceita string `"2026-W46"` ou o envelope agendado com `time` ISO-8601.)
 
 ## Como decidimos
 
@@ -64,8 +300,6 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
 | [0026](docs/adr/0026-redeploy-manual-de-commit-da-main.md) | O `deploy` aceita redeploy manual de um commit da `main`, para rollback; o `ci` roda em toda PR e só no push da `main` | aceita |
 | [0027](docs/adr/0027-redeploy-so-da-linha-principal-da-main.md) | O redeploy manual só aceita commit que já foi o estado da `main` (linha de primeiros pais), não qualquer ancestral | aceita |
 
-Contrato da rota: [`docs/contracts/receive-evaluation.md`](docs/contracts/receive-evaluation.md).
-
 ### Desvios do enunciado, e por quê
 
 - **A rota é `/avaliacao`, sem acento.** Em HTTP o path só admite ASCII: `ç` e `ã` trafegam codificados, e cada
@@ -82,20 +316,3 @@ Contrato da rota: [`docs/contracts/receive-evaluation.md`](docs/contracts/receiv
   limite de taxa freia; o login de Student seria a solução ([ADR 0006](docs/adr/0006-endpoint-anonimo.md)).
 - **Um Weekly Report de mais de 12 semanas atrás não pode ser gerado de novo**
   ([ADR 0009](docs/adr/0009-dados-gravados-retencao-e-logs.md)).
-
-## Testes
-
-A estratégia é por comportamento que precisa ser provado, não por meta de cobertura:
-
-1. **`domain`** — unitários puros: os 11 Scores contra as faixas da ADR 0001; agregação do Weekly Report (semana
-   vazia, Evaluation de domingo 23:30 em Brasília na semana certa, 7 dias e 3 Urgencies sempre presentes, teto de 500
-   com contagens completas).
-2. **`receive-evaluation`** — cada linha da tabela de validação do contrato vira um caso; resposta `201` e
-   `problem+json`; gravação contra o banco emulado em container.
-3. **`send-urgency-notice` e `send-weekly-report`** — só `CRITICAL` gera aviso; o mesmo evento duas vezes envia uma;
-   falha no item 6 de um lote envia de novo só o e-mail dele, embora os itens 6 a 10 voltem; Description com HTML sai
-   escapada; rodar de novo a mesma semana dá o mesmo relatório.
-4. **Nas regras críticas** (faixas, escape, fronteira de semana, teto), o teste é conferido quebrando o código de
-   propósito: ele precisa ficar vermelho.
-5. **Ponta a ponta** — roteiro de validação manual e collection Postman no ambiente da cloud, que servem também de
-   roteiro do vídeo.

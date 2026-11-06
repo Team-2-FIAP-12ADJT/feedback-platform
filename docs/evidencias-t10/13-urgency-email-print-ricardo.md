@@ -10,5 +10,5 @@ Timestamp do arquivo (§7, canto superior direito no PNG): **03/11/2026 21:36**
 
 ## Confirmação
 - **Ricardo** confirmou recebimento (print via WhatsApp).
-- Destinatários SES verificados (sandbox): `ricardo.engp@gmail.com`, `leomiroliveira5@gmail.com`, `leonardoalves.souza10@gmail.com`.
+- Destinatários: identidades SES da variable `ADMINISTRATORS` (sandbox; e-mails reais fora do repositório).
 - Arquivo: `13-urgency-email-print-ricardo.png`

@@ -13,5 +13,5 @@ Timestamp do print/nota (§7): **03/11/2026 21:34** (canto superior direito)
 - Interpretação: Lambda `send-urgency-notice` **marcou envio** (~8s após dataEnvio).
 
 ## Destinatários (sandbox)
-- Identidades SES verificadas: ricardo.engp@gmail.com, leomiroliveira5@gmail.com, leonardoalves.souza10@gmail.com
-- Conta SES em **sandbox** — Gustavo **não** está nas identidades; e-mail **não** deve chegar na caixa dele.
+- Identidades SES verificadas: três endereços da variable `ADMINISTRATORS` (sandbox; **não** listar e-mails reais no repositório).
+- Conta SES em **sandbox** — só quem está em `ADMINISTRATORS` recebe; demais caixas não.
