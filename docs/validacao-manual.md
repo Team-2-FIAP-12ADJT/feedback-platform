@@ -246,5 +246,5 @@ docker images amazon/dynamodb-local:3.3.2
 
 ## Fora de escopo deste documento
 
-- Seções finais de arquitetura, deploy e governança no `README.md` → **T-11**.
-- Gravação do vídeo → **T-13**.
+- Gravação e edição do vídeo de demonstração, e o link de entrega no `README.md` → **T-13**.
+  (Arquitetura, deploy e governança no README já foram cobertos pelo **T-11**.)
