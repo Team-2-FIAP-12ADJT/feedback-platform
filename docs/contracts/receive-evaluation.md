@@ -1,6 +1,7 @@
 # Contrato — `POST /avaliacao`
 
-Única rota pública da plataforma, atendida pela `receive-evaluation`. Anônima
+Única rota pública da plataforma, atendida pela `receive-evaluation`. Exige API key no header `x-api-key`
+([ADR 0028](../adr/0028-api-key-com-usage-plan.md)); o Student continua sem se identificar
 ([ADR 0006](../adr/0006-endpoint-anonimo.md)). Os campos ficam em português porque o contrato é do enunciado
 ([ADR 0002](../adr/0002-codigo-em-ingles-contrato-em-portugues.md)).
 
@@ -12,7 +13,8 @@ jeito. A rota com acento não é atendida.
 
 ## Requisição
 
-`Content-Type: application/json`
+- `Content-Type: application/json`
+- `x-api-key: <valor da API key>`
 
 ```json
 {
@@ -75,9 +77,10 @@ Corpo em `application/problem+json` (RFC 9457):
 | Status | Quando | Quem responde |
 |---|---|---|
 | `400` | Qualquer linha da tabela de validação | `receive-evaluation` |
+| `403` | Header `x-api-key` ausente ou inválido | Gateway |
 | `413` | Corpo acima do limite | Gateway |
 | `415` | `Content-Type` diferente de `application/json` | `receive-evaluation` |
-| `429` | Limite de requisições estourado | Gateway |
+| `429` | Limite de requisições ou cota diária da API key estourados | Gateway |
 | `500` | Falha da plataforma (ex.: banco fora do ar) — sem stack trace nem mensagem interna | `receive-evaluation` |
 
 O valor recusado nunca é ecoado no `detail` nem registrado em log

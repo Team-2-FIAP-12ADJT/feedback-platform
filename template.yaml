@@ -67,6 +67,13 @@ Parameters:
     Description: >
       Pico maximo (burst) de requisicoes simultaneas no API Gateway REST (ADR 0015).
 
+  ApiKeyDailyQuota:
+    Type: Number
+    Default: 5000
+    MinValue: 1
+    Description: >
+      Cota diaria de requisicoes da API key no usage plan do API Gateway REST (ADR 0028).
+
   # Limites ajustaveis dos alarmes de volume: pontos de partida, a calibrar depois do primeiro uso real (ADR 0016).
   AlarmRequestsPerFiveMinutes:
     Type: Number
@@ -376,6 +383,20 @@ Resources:
       StageName: !Ref Environment
       EndpointConfiguration:
         Type: REGIONAL
+      # API key obrigatoria no header x-api-key, com usage plan proprio da API (ADR 0028).
+      # Sem a chave, o API Gateway responde 403 antes de invocar a Lambda.
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName: !Sub 'feedback-platform-usage-plan-${Environment}'
+          Description: Limites de uso da API key do POST /avaliacao (ADR 0028)
+          Throttle:
+            RateLimit: !Ref ApiThrottlingRateLimit
+            BurstLimit: !Ref ApiThrottlingBurstLimit
+          Quota:
+            Limit: !Ref ApiKeyDailyQuota
+            Period: DAY
       MethodSettings:
         - ResourcePath: '/*'
           HttpMethod: '*'
@@ -976,6 +997,11 @@ Outputs:
     Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/avaliacao'
     Export:
       Name: !Sub '${AWS::StackName}-ApiEndpoint'
+
+  # Somente o ID: o valor da chave nao sai em output (ler com aws apigateway get-api-key --include-value, ADR 0028)
+  ApiKeyId:
+    Description: ID da API key exigida no header x-api-key do POST /avaliacao
+    Value: !Ref RestApiApiKey
 
   EvaluationsTableName:
     Description: Nome da tabela DynamoDB de avaliacoes
