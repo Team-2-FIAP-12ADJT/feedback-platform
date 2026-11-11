@@ -13,6 +13,9 @@ public final class UrgencyNoticeEmail {
     private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
     private static final String SUBJECT = "Aviso de urgência: avaliação crítica";
 
+    /**
+     * Impede a instanciação desta classe de montagem.
+     */
     private UrgencyNoticeEmail() {
     }
 

@@ -2,6 +2,7 @@ package br.com.fiap.feedbackplatform.receiveevaluation.api;
 
 /** Erro de validação de entrada, traduzido para RFC 9457 pelo mapper. */
 public class InvalidRequestException extends RuntimeException {
+    /** Campo do contrato que falhou, ou nulo quando o corpo inteiro é inválido. */
     private final String field;
     /**
      * Cria erro com campo e detalhe fixo, sem armazenar o valor recusado.

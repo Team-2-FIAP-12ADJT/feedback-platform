@@ -13,6 +13,9 @@ import java.util.regex.Pattern;
 
 /**
  * Semana ISO de segunda a domingo em Brasília, conforme ADR 0008.
+ *
+ * @param year ano ISO da Report Week
+ * @param week número ISO da semana
  */
 public record ReportWeek(int year, int week) {
     private static final ZoneId BRASILIA = ZoneId.of("America/Sao_Paulo");

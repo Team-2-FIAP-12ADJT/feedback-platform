@@ -13,6 +13,12 @@ import org.jboss.resteasy.reactive.server.ServerExceptionMapper;
 public class ProblemMappers {
     private static final Logger LOG = Logger.getLogger(ProblemMappers.class);
 
+    /**
+     * Cria o mapeador de erros da borda HTTP.
+     */
+    public ProblemMappers() {
+    }
+
     /** Mapeia propriedade JSON desconhecida.
      * @param exception exceção com o nome do campo
      * @return resposta 400
