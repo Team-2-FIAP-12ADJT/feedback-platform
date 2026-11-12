@@ -1,6 +1,6 @@
 # ADR 0006 — `POST /avaliacao` anônimo, com limites na borda
 
-- **Status:** aceita
+- **Status:** substituída em parte pela [ADR 0028](0028-api-key-com-usage-plan.md) (o endpoint passou a exigir API key)
 - **Data:** 2026-10-14
 
 ## Contexto

@@ -121,23 +121,29 @@ jobs:
           }
           api=$(output ApiEndpoint)
           table=$(output EvaluationsTableName)
-          [ -n "$api" ] && [ "$api" != None ] && [ -n "$table" ] && [ "$table" != None ] || { echo "::error::Saidas da pilha ausentes"; exit 1; }
+          key_id=$(output ApiKeyId)
+          [ -n "$api" ] && [ "$api" != None ] && [ -n "$table" ] && [ "$table" != None ] && [ -n "$key_id" ] && [ "$key_id" != None ] || { echo "::error::Saidas da pilha ausentes"; exit 1; }
           echo "api=$api" >> "$GITHUB_OUTPUT"
           echo "table=$table" >> "$GITHUB_OUTPUT"
+          echo "keyId=$key_id" >> "$GITHUB_OUTPUT"
 
       # Nota 9 da Urgency LOW: grava sem disparar Urgency Notice (ADR 0024).
+      # A API key e lida da AWS a cada execucao e mascarada no log (ADR 0028).
       - name: Fumaca - POST /avaliacao
         id: post
         env:
           API: ${{ steps.stack.outputs.api }}
+          KEY_ID: ${{ steps.stack.outputs.keyId }}
           COMMIT: ${{ steps.target.outputs.short }}
         run: |
+          api_key=$(aws apigateway get-api-key --api-key "$KEY_ID" --include-value --query value --output text)
+          echo "::add-mask::$api_key"
           body=$(jq -nc --arg d "Teste de fumaça do deploy $COMMIT" '{descricao: $d, nota: 9}')
           # Dia da primeira tentativa: a remocao procura nele as gravacoes de tentativas anteriores a meia-noite (ADR 0025).
           echo "startDay=$(TZ=America/Sao_Paulo date +%F)" >> "$GITHUB_OUTPUT"
           for attempt in 1 2 3 4 5; do
             status=$(curl -sS --max-time 30 -o response.json -w '%{http_code}' -X POST "$API" \
-              -H 'Content-Type: application/json' --data "$body") || true
+              -H 'Content-Type: application/json' -H "x-api-key: $api_key" --data "$body") || true
             status=${status:-000}
             # 5xx e falha de rede logo apos o deploy podem ser passageiros.
             case "$status" in 5*|000) echo "retried=1" >> "$GITHUB_OUTPUT"; echo "Tentativa $attempt: HTTP $status"; sleep 10 ;; *) break ;; esac
@@ -151,6 +157,13 @@ jobs:
           data_envio=$(jq -er .dataEnvio response.json)
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "dataEnvio=$data_envio" >> "$GITHUB_OUTPUT"
+          # Sem a chave o gateway precisa recusar com 403 antes de chegar a Lambda (ADR 0028).
+          no_key=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X POST "$API" \
+            -H 'Content-Type: application/json' --data '{}') || true
+          if [ "$no_key" != 403 ]; then
+            echo "::error::POST /avaliacao sem API key respondeu $no_key, esperado 403"
+            exit 1
+          fi
 
       - name: Fumaca - SnapStart nas versoes publicadas
         run: |

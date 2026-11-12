@@ -131,8 +131,9 @@ Montagem HTML/texto, escape de Description e rótulos em português dos e-mails 
 
 ### Borda (API Gateway REST + WAF)
 
-([ADR 0006](docs/adr/0006-endpoint-anonimo.md), [ADR 0015](docs/adr/0015-rest-api-com-waf.md))
+([ADR 0006](docs/adr/0006-endpoint-anonimo.md), [ADR 0015](docs/adr/0015-rest-api-com-waf.md), [ADR 0028](docs/adr/0028-api-key-com-usage-plan.md))
 
+- **API key** obrigatória no header `x-api-key`, vinculada a um usage plan (throttle 20 req/s, burst 50, cota diária) → `403` sem chave. O valor não fica no repositório: output `ApiKeyId` + `aws apigateway get-api-key --include-value`
 - Corpo até **8 KB** → `413`
 - **300** requisições / 5 min por IP → `429`
 - Teto global **20 req/s** (burst 50) → `429`
@@ -277,7 +278,7 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
 | [0003](docs/adr/0003-tres-funcoes-aviso-nasce-da-gravacao.md) | Três funções, uma aplicação por função; o aviso nasce da gravação da Evaluation | aceita |
 | [0004](docs/adr/0004-framework-escolhido-pelo-gatilho.md) | Java 25; Quarkus na função HTTP, Spring Boot nas que enviam e-mail; monorepo Maven | aceita |
 | [0005](docs/adr/0005-entrega-pelo-menos-uma-vez.md) | Urgency Notice "pelo menos uma vez", com marca na Evaluation; duplicatas aceitas | aceita |
-| [0006](docs/adr/0006-endpoint-anonimo.md) | `POST /avaliacao` anônimo, com limites na borda | aceita |
+| [0006](docs/adr/0006-endpoint-anonimo.md) | `POST /avaliacao` anônimo, com limites na borda | substituída em parte pela 0028 |
 | [0007](docs/adr/0007-operational-alert-separado-do-urgency-notice.md) | Operational Alert para falhas da plataforma, separado do Urgency Notice | aceita |
 | [0008](docs/adr/0008-regras-do-weekly-report.md) | Report Week de segunda a domingo em Brasília; teto de 500 na lista; semana vazia também envia | aceita |
 | [0009](docs/adr/0009-dados-gravados-retencao-e-logs.md) | Nada que identifique o Student; retenção de 12 semanas; Description fora do log | aceita |
@@ -299,6 +300,7 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
 | [0025](docs/adr/0025-teste-de-fumaca-remove-por-descricao.md) | O teste de fumaça remove por Description nas partições da execução, limpando também órfãs de retentativas | aceita |
 | [0026](docs/adr/0026-redeploy-manual-de-commit-da-main.md) | O `deploy` aceita redeploy manual de um commit da `main`, para rollback; o `ci` roda em toda PR e só no push da `main` | aceita |
 | [0027](docs/adr/0027-redeploy-so-da-linha-principal-da-main.md) | O redeploy manual só aceita commit que já foi o estado da `main` (linha de primeiros pais), não qualquer ancestral | aceita |
+| [0028](docs/adr/0028-api-key-com-usage-plan.md) | O `POST /avaliacao` exige API key no header `x-api-key`, com usage plan (throttle e cota diária) | aceita |
 
 ### Desvios do enunciado, e por quê
 
@@ -312,7 +314,8 @@ discutida. Uma ADR aceita só é contrariada por outra ADR que a substitua.
   ([ADR 0005](docs/adr/0005-entrega-pelo-menos-uma-vez.md)).
 - **Evaluation duplicada por reenvio do cliente é aceita**: o payload não tem identificador para distinguir um
   reenvio de duas Evaluations iguais.
-- **O endpoint é anônimo**: uma enxurrada de Evaluations com Score baixo gera uma enxurrada de Urgency Notices. O
-  limite de taxa freia; o login de Student seria a solução ([ADR 0006](docs/adr/0006-endpoint-anonimo.md)).
+- **O Student não se identifica**: a API key identifica o cliente, não a pessoa. Quem tiver a chave pode gerar uma
+  enxurrada de Evaluations com Score baixo e, com ela, de Urgency Notices. Throttle, cota diária e WAF freiam; o login
+  de Student seria a solução ([ADR 0006](docs/adr/0006-endpoint-anonimo.md), [ADR 0028](docs/adr/0028-api-key-com-usage-plan.md)).
 - **Um Weekly Report de mais de 12 semanas atrás não pode ser gerado de novo**
   ([ADR 0009](docs/adr/0009-dados-gravados-retencao-e-logs.md)).

@@ -1,6 +1,6 @@
 # Validação manual — ambiente demo (`sa-east-1`)
 
-Roteiro executável do **T-10**. Serve também de roteiro do vídeo de demonstração ([README](../README.md) §Testes item 5).
+Roteiro executável do **T-10**. O roteiro enxuto do vídeo de demonstração está em [`roteiro-video.md`](roteiro-video.md).
 
 Fontes: [contrato HTTP](contracts/receive-evaluation.md), ADRs 0005, 0008, 0009, 0014–0017, 0023, collection em [`postman/`](postman/).
 
@@ -12,6 +12,7 @@ Fontes: [contrato HTTP](contracts/receive-evaluation.md), ADRs 0005, 0008, 0009,
 2. Cada Administrator cria na própria caixa a regra **“nunca enviar para o spam”** para o remetente = **primeiro** endereço de `ADMINISTRATORS` ([ADR 0023](adr/0023-remetente-e-o-primeiro-administrator.md)).
 3. Obter (somente leitura) os outputs da stack `feedback-platform`:
    - `ApiEndpoint` → variável `baseUrl` da collection Postman
+   - `ApiKeyId` → `aws apigateway get-api-key --api-key <id> --include-value` → variável `apiKey` ([ADR 0028](adr/0028-api-key-com-usage-plan.md))
    - `EvaluationsTableName` → inspeção DynamoDB
 4. Importar [`postman/feedback-platform.postman_collection.json`](postman/feedback-platform.postman_collection.json) e preencher `baseUrl` / `stageBase` — ver [`postman/README.md`](postman/README.md).
 
@@ -25,7 +26,7 @@ Fontes: [contrato HTTP](contracts/receive-evaluation.md), ADRs 0005, 0008, 0009,
    - Esperado: `201`, body com `id` e `dataEnvio`, **sem** header `Location`, **sem** campo `urgency`.
 2. Rodar a pasta **Rejeições 400**.
    - Esperado: `400` + `application/problem+json`; `detail` **não** ecoa o valor recusado ([ADR 0009](adr/0009-dados-gravados-retencao-e-logs.md)).
-3. Rodar a pasta **Borda**: `415`, `413` (> 8 KB), `403`/`404`.
+3. Rodar a pasta **Borda**: `403` sem API key, `415`, `413` (> 8 KB), `403`/`404`.
 4. No DynamoDB (`sa-east-1`), partição `submissionDay` = data de hoje em `America/Sao_Paulo` (`yyyy-MM-dd`):
    - Itens das três faixas com `urgency` `LOW` / `MEDIUM` / `CRITICAL` conforme Score ([ADR 0001](adr/0001-urgencia-derivada-da-nota.md)).
    - `expiresAt` presente (TTL 12 semanas).
@@ -210,7 +211,7 @@ Alternativa equivalente: payload mapa `{"reportWeek":"2026-W44"}` (uma única ch
 |---|---|
 | Collection **Felizes** (8 / 5 / 2) | `201`; body com `id` + `dataEnvio`; sem `Location`; sem `urgency` |
 | Collection **Rejeições 400** | `400` + `application/problem+json`; `detail` sem ecoar valor recusado |
-| Collection **Borda** | `415`; `413` (> 8 KB); `403` ou `404` |
+| Collection **Borda** | `403` sem API key; `415`; `413` (> 8 KB); `403` ou `404` |
 | DynamoDB após felizes | Itens `LOW` / `MEDIUM` / `CRITICAL` no `submissionDay` de hoje (Brasília); `expiresAt` presente |
 | Após CRITICAL | Item com **`urgencyNoticeSentAt`**; e-mail assunto **Aviso de urgência: avaliação crítica**; LOW/MEDIUM **sem** esse e-mail |
 | ScheduleV2 | Enabled; segunda 08:00 `America/Sao_Paulo` |

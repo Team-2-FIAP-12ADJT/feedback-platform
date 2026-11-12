@@ -13,8 +13,20 @@
     {
       "key": "stageBase",
       "value": "https://REPLACE.execute-api.sa-east-1.amazonaws.com/demo"
+    },
+    {
+      "key": "apiKey",
+      "value": "REPLACE_COM_O_VALOR_DA_API_KEY"
     }
   ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key", "value": "x-api-key", "type": "string" },
+      { "key": "value", "value": "{{apiKey}}", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
   "item": [
     {
       "name": "Felizes",
@@ -418,6 +430,30 @@
     {
       "name": "Borda",
       "item": [
+        {
+          "name": "403 sem API key",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"descricao\": \"Requisicao sem x-api-key deve ser recusada.\",\n  \"nota\": 5\n}"
+            },
+            "url": "{{baseUrl}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
         {
           "name": "415 Content-Type text/plain",
           "request": {
