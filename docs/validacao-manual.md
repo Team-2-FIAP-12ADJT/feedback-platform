@@ -241,10 +241,3 @@ docker images amazon/dynamodb-local:3.3.2
 ```
 
 **Esperado:** imagem `amazon/dynamodb-local:3.3.2` listada localmente; em seguida `mvn clean verify` no clone limpo (`core.autocrlf=true`) conclui **BUILD SUCCESS** sem o Testcontainers tentar pull IPv6. Detalhe de uma prova: [`evidencias-t10/15-portabilidade.md`](evidencias-t10/15-portabilidade.md).
-
----
-
-## Fora de escopo deste documento
-
-- Seções finais de arquitetura, deploy e governança no `README.md` → **T-11**.
-- Gravação do vídeo → **T-13**.
