@@ -210,12 +210,24 @@ Documentar só com placeholders — **não** colocar e-mails reais nem o ARN com
 |---|---|
 | `ADMINISTRATORS` | Lista CSV dos Administrators; **primeiro** endereço = remetente SES e identidade a verificar |
 | `AWS_DEPLOY_ROLE_ARN` | ARN da role `feedback-platform-deploy` (preencher no GitHub, não neste arquivo) |
+| `DESTROY_STACK` | Opcional. `true` → o workflow `deploy` **apaga** a pilha em vez de implantar; ausente ou qualquer outro valor → deploy normal (cria/atualiza os recursos) |
 
 ### Deploy automático e redeploy
 
 - **CI** (`.github/workflows/ci.yml`): em toda PR e no push da `main`.
 - **Deploy** (`.github/workflows/deploy.yml`): após `ci` verde no push da `main` (OIDC); exige as variables acima; termina com **teste de fumaça** que grava uma Evaluation, confere SnapStart e **apaga** a Evaluation para não poluir o Weekly Report ([ADR 0024](docs/adr/0024-teste-de-fumaca-apaga-a-propria-evaluation.md), [ADR 0025](docs/adr/0025-teste-de-fumaca-remove-por-descricao.md)).
 - **Redeploy manual**: `workflow_dispatch` com `ref` = SHA que já foi estado da `main` (linha de primeiros pais) ([ADR 0026](docs/adr/0026-redeploy-manual-de-commit-da-main.md), [ADR 0027](docs/adr/0027-redeploy-so-da-linha-principal-da-main.md)).
+
+### Destroy (remover os recursos da AWS)
+
+1. GitHub → *Settings → Secrets and variables → Actions → Variables*: criar `DESTROY_STACK` = `true`.
+2. Disparar o workflow `deploy`: *Actions → deploy → Run workflow* (o `ref` é ignorado) ou um push na `main`. Roda o job **destroy** (`sam delete` da pilha `feedback-platform`) no lugar do deploy, e o job termina com erro se a pilha não sumir.
+3. Para recriar: apagar a variable ou mudar para `false` e disparar o `deploy` de novo. Depois, repetir o **Pós-deploy** (a verificação SES e a assinatura SNS são refeitas).
+
+> [!CAUTION]
+> O destroy apaga a tabela `evaluations` com todas as avaliações, sem backup. Enquanto `DESTROY_STACK` = `true`, todo push na `main` apaga a pilha em vez de implantar.
+
+Ficam fora do destroy: a pilha de bootstrap ([`infra/bootstrap-oidc.yaml`](infra/bootstrap-oidc.yaml)), o bucket de artefatos do SAM (`aws-sam-cli-managed-default`) e os log groups `/aws/lambda/feedback-platform-*`, que as Lambdas criam fora do template.
 
 ### Pós-deploy (Administrators)
 
