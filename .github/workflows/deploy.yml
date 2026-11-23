@@ -1,5 +1,7 @@
 # Deploy na AWS a cada push na main com o ci verde, ou manual para redeploy de um commit da main (ADR 0013, ADR 0026).
 # Termina com o teste de fumaca, que grava uma Evaluation, confere o SnapStart e apaga a Evaluation (ADR 0011, ADR 0024, ADR 0025).
+# Com a variable DESTROY_STACK = 'true' o mesmo gatilho roda o job destroy, que apaga a pilha, no lugar do deploy.
+# Com DESTROY_STACK ausente ou diferente de 'true' o deploy cria ou atualiza os recursos normalmente.
 name: deploy
 
 on:
@@ -31,10 +33,72 @@ env:
   SAM_CLI_TELEMETRY: '0'
 
 jobs:
+  # Destroy da pilha da aplicacao quando a variable DESTROY_STACK = 'true'. Mesmas regras de gatilho do deploy.
+  # Nao toca na pilha de bootstrap (infra/bootstrap-oidc.yaml): a role de deploy continua existindo para recriar tudo.
+  destroy:
+    name: destroy
+    if: >-
+      vars.DESTROY_STACK == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Conferir variables do repositorio
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          [ -n "$AWS_DEPLOY_ROLE_ARN" ] || { echo "::error::Variable AWS_DEPLOY_ROLE_ARN ausente"; exit 1; }
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: destroy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Conferir se a pilha existe
+        id: stack
+        run: |
+          status=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].StackStatus' --output text 2>/dev/null) || status=NONE
+          echo "Pilha $STACK_NAME: $status"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          if [ "$status" = NONE ]; then
+            echo "::notice::Pilha $STACK_NAME nao existe em $AWS_REGION; nada a destruir"
+          fi
+
+      # Apaga a pilha e todos os recursos dela: tabela evaluations (com os dados), Lambdas, API, WAF, filas,
+      # topico SNS, identidades SES, alarmes, regras e dashboard.
+      - name: sam delete
+        if: steps.stack.outputs.status != 'NONE'
+        run: sam delete --stack-name "$STACK_NAME" --region "$AWS_REGION" --no-prompts
+
+      - name: Conferir remocao
+        if: steps.stack.outputs.status != 'NONE'
+        run: |
+          status=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].StackStatus' --output text 2>/dev/null) || status=NONE
+          if [ "$status" != NONE ]; then
+            echo "::error::Pilha $STACK_NAME continua com status $status"
+            aws cloudformation describe-stack-events --stack-name "$STACK_NAME" \
+              --query "StackEvents[?ResourceStatus=='DELETE_FAILED'].[LogicalResourceId,ResourceStatusReason]" \
+              --output table || true
+            exit 1
+          fi
+          echo "Pilha $STACK_NAME removida"
+
   deploy:
     name: deploy
     # A role so confia na main (ADR 0013): sem "environment:", que mudaria o sub do token.
     if: >-
+      vars.DESTROY_STACK != 'true' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' &&
